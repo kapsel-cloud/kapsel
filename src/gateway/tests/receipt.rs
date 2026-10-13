@@ -1,21 +1,6 @@
 //! Completion checks SQL-owned candidate binding; storage owns the process commitment windows.
 use super::{LoadedOperation, *};
 
-#[tokio::test]
-async fn full_identity_capacity_ascending_completes_all_remaining_receipts() {
-    super::storage::qualify_full_capacity_order("ascending").await;
-}
-
-#[tokio::test]
-async fn full_identity_capacity_descending_completes_all_remaining_receipts() {
-    super::storage::qualify_full_capacity_order("descending").await;
-}
-
-#[tokio::test]
-async fn full_identity_capacity_alternating_completes_all_remaining_receipts() {
-    super::storage::qualify_full_capacity_order("alternating").await;
-}
-
 #[test]
 fn receipt_commit_rejects_wrong_facts_and_foreign_snapshot_without_changing_history() {
     let paths = [

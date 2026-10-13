@@ -725,11 +725,37 @@ mod tests {
             journal.insert_git(&git_binding("git-0"), &worker).unwrap(),
             GitPhase::Authorized
         );
+        let binding = git_binding("git-0");
+        journal
+            .connection
+            .execute_batch(
+                "UPDATE git_ref_operations SET state='receiver_observed',
+             acknowledgement='unknown', observed_ref_kind='missing' WHERE operation_id='git-0'",
+            )
+            .unwrap();
+        let statement = evidence::GitStatement {
+            authorization: binding.authorization().clone(),
+            authorization_signer: "snapshot-signer".into(),
+            authorization_digest: digest(binding.signed_grant()),
+            acknowledgement: Acknowledgement::Unknown,
+            observed: ObservedRef::Missing,
+        };
+        let bytes = evidence::sign(&statement, &[9; 32], "receipt-key").unwrap();
+        journal
+            .commit_git_receipt(&binding, &bytes, &worker)
+            .unwrap();
+        assert_eq!(capacity::counts(&journal.connection).unwrap(), (32, 31));
+        journal
+            .insert_git(&git_binding("released-slot"), &worker)
+            .unwrap();
         drop(worker);
         drop(journal);
-        assert_eq!(
-            capacity::counts(&open_scratch(&scratch).connection).unwrap(),
-            (32, 32)
-        );
+        let reopened = open_scratch(&scratch);
+        assert_eq!(capacity::counts(&reopened.connection).unwrap(), (33, 32));
+        let Some(GitPhase::Finalized { receipt, .. }) = reopened.git_operation(&binding).unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(receipt.bytes, bytes);
     }
 }

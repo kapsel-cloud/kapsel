@@ -248,7 +248,6 @@ fn spawn_process_child(
     database: &Path,
     ready: &Path,
     patch_count: Option<&Path>,
-    output: Option<&Path>,
 ) -> Child {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
@@ -267,9 +266,6 @@ fn spawn_process_child(
         .stderr(Stdio::inherit());
     if let Some(path) = patch_count {
         command.env("KAPSEL_PROCESS_PATCH_COUNT", path);
-    }
-    if let Some(path) = output {
-        command.env("KAPSEL_PROCESS_OUTPUT", path);
     }
     command.spawn().unwrap()
 }

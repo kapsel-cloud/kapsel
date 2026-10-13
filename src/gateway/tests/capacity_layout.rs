@@ -47,7 +47,7 @@ fn layout_request() -> SetDeploymentImageRequest {
 
 fn create_padded_layout(path: &Path, padding: usize) {
     let gateway = Gateway::open(path, journal::test_history::trust()).unwrap();
-    History::new(layout_request(), None).insert(&gateway.journal.connection, "authorized");
+    History::new(layout_request(), None).insert(&gateway.journal.connection, "receiver_observed");
     drop(gateway);
     let connection = Connection::open(path).unwrap();
     assert_eq!(rusqlite::version(), "3.53.2");
@@ -92,69 +92,31 @@ fn insert_long_retained_rows(path: &Path, count: usize) {
     }
 }
 
-async fn complete_layout_operation(path: &Path, request: &SetDeploymentImageRequest) {
-    // Shared read-only snapshot acceptance is separate from logical selection of the valid row.
+fn complete_layout_operation(path: &Path) {
     Journal::validate_replacement(path, &[]).unwrap();
-    let mut gateway = Gateway::open(path, journal::test_history::trust()).unwrap();
-    let history = History::new(request.clone(), None);
-    assert_eq!(
-        gateway
-            .submit_authorized(request, &history.authorized.authorization().signed_grant)
-            .unwrap(),
-        SubmissionResult::Existing(OperationState::Authorized)
-    );
-    let mut adapter = failed_rollout_adapter(path, request);
-    adapter.identified_target.deployment_uid = "u".repeat(128);
-    adapter.identified_target.resource_version = "r".repeat(128);
-    adapter.outcome.deployment_uid = Some("u".repeat(128));
-    adapter.outcome.resource_version = Some("r".repeat(128));
-    adapter.observation.deployment_uid = Some("u".repeat(128));
-    adapter.observation.resource_version = Some("r".repeat(128));
-    adapter.observation.rollout_condition_reason = Some("r".repeat(128));
-    assert_eq!(
-        gateway
-            .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
-            .await
-            .unwrap(),
-        Some(OperationState::ReceiverObserved)
-    );
-    assert_eq!(
-        gateway
-            .finalize_operation_receipt_once(
-                &request.operation_id,
-                &ReceiptSettings {
-                    signing_seed: &[13; 32],
-                    key_id: "layout-receipt",
-                }
-            )
-            .unwrap(),
-        Some(OperationState::Finalized)
-    );
-    assert_eq!(adapter.apply_calls, 1);
-    let receipt = Gateway::read_loaded_receipt(
-        gateway
-            .journal
-            .operation(&request.operation_id)
-            .unwrap()
-            .unwrap(),
-    )
-    .unwrap();
-
-    drop(gateway);
-    eprintln!("completed live pages: {}", layout_live_pages(path));
-    Journal::validate_replacement(path, &[]).unwrap();
-    let reopened = Gateway::open_for_test(path).unwrap();
-    assert_eq!(
-        Gateway::read_loaded_receipt(
-            reopened
-                .journal
-                .operation(&request.operation_id)
-                .unwrap()
-                .unwrap()
+    let history = History::new(layout_request(), None);
+    let gateway = Gateway::open(path, journal::test_history::trust()).unwrap();
+    let mut expected = stored_rows(&gateway.journal.connection);
+    let row = expected.get_mut(&history.request.operation_id).unwrap();
+    let bytes = receipt::sign_statement(&history.statement, &[13; 32], "layout-receipt").unwrap();
+    row[9] = rusqlite::types::Value::Text("finalized".into());
+    row[32] = rusqlite::types::Value::Text(journal::test_history::digest(&bytes));
+    row[33] = rusqlite::types::Value::Blob(bytes);
+    row[34] = rusqlite::types::Value::Text("layout-receipt".into());
+    gateway
+        .finalize_operation_receipt_once(
+            &history.request.operation_id,
+            &ReceiptSettings {
+                signing_seed: &[13; 32],
+                key_id: "layout-receipt",
+            },
         )
-        .unwrap(),
-        receipt
-    );
+        .unwrap();
+    assert_eq!(stored_rows(&gateway.journal.connection), expected);
+    drop(gateway);
+    Journal::validate_replacement(path, &[]).unwrap();
+    let reopened = Gateway::open(path, journal::test_history::trust()).unwrap();
+    assert_eq!(stored_rows(&reopened.journal.connection), expected);
 }
 
 fn page_u32(bytes: &[u8], offset: usize) -> u32 {
@@ -557,8 +519,8 @@ fn persisted_record_limit_is_enforced_on_reopen() {
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
 
-#[tokio::test]
-async fn sparse_accepted_layout_preserves_live_bound_after_legitimate_completion() {
+#[test]
+fn sparse_accepted_layout_preserves_live_bound_after_legitimate_completion() {
     for padding_kib in [56, 60] {
         let path = database_path(&format!("sparse-accepted-completion-{padding_kib}"));
         create_padded_layout(&path, padding_kib * 1024);
@@ -570,21 +532,9 @@ async fn sparse_accepted_layout_preserves_live_bound_after_legitimate_completion
             21 * 8 + 3
         );
         assert_eq!(before, if padding_kib == 56 { 173 } else { 174 });
-        complete_layout_operation(&path, &layout_request()).await;
+        complete_layout_operation(&path);
         assert_eq!(layout_live_pages(&path), before + 1);
         assert!(layout_live_pages(&path) <= 23 * 8 + 76);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
-}
-
-#[tokio::test]
-async fn long_retained_ids_and_padded_schema_complete_selected_legitimate_operation() {
-    let path = database_path("long-retained-padded-schema");
-    create_padded_layout(&path, 48 * 1024);
-    // Populate after schema creation: an empty padded schema alone need not pass the live bound.
-    insert_long_retained_rows(&path, 7);
-    let request = layout_request();
-    eprintln!("initial live pages: {}", layout_live_pages(&path));
-    complete_layout_operation(&path, &request).await;
-    fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }

@@ -157,27 +157,65 @@ pub(super) fn maximal_request(index: i64) -> SetDeploymentImageRequest {
     }
 }
 
-fn maximal_gateway(path: &Path) -> Gateway {
-    Gateway::open(
-        path,
-        AuthorizationTrust {
-            key_id: "g".repeat(128),
-            public_key: ed25519_dalek::SigningKey::from_bytes(&[7; 32])
-                .verifying_key()
-                .to_bytes(),
-        },
-    )
-    .unwrap()
+fn maximal_history(operation: SetDeploymentImageRequest, signer: &str) -> History {
+    let mut history = History::with_authority(
+        operation,
+        Some(ApprovedTarget {
+            uid: "u".repeat(128),
+            resource_version: "r".repeat(128),
+        }),
+        &"a".repeat(128),
+        signer,
+    );
+    let s = &mut history.statement;
+    s.target_uid = "u".repeat(128);
+    s.target_resource_version = "r".repeat(128);
+    s.receiver_uid = Some("u".repeat(128));
+    s.observed_image = Some(s.immutable_image_digest.clone());
+    s.observed_operation_marker = Some(s.operation_id.clone());
+    s.observed_resource_version = Some("r".repeat(128));
+    s.current_generation = Some(i64::MAX);
+    s.requested_generation = Some(i64::MAX);
+    s.observed_generation = Some(i64::MAX);
+    s.desired_replicas = Some(i32::MAX);
+    s.updated_replicas = Some(i32::MAX);
+    s.available_replicas = Some(i32::MAX);
+    s.unavailable_replicas = Some(i32::MAX);
+    s.rollout_condition_type = Some("t".repeat(128));
+    s.rollout_condition_status = Some("s".repeat(128));
+    s.rollout_condition_reason = Some("r".repeat(128));
+    history
 }
 
-fn maximal_grant(operation: &SetDeploymentImageRequest) -> Vec<u8> {
-    let mut approval = authorization(operation);
-    approval.authorization_id = "a".repeat(128);
-    approval.approved_target = Some(ApprovedTarget {
-        uid: "u".repeat(128),
-        resource_version: "r".repeat(128),
-    });
-    sign_authorization_grant(&approval, &[7; 32], &"g".repeat(128)).unwrap()
+// Independent SQL supplies retained authority/facts, not the production transition writer.
+// Lifecycle laws own interruption/effect matrices; this fixture owns maximal aggregate growth.
+fn capacity_history(path: &Path, phases: &[&str], signer: &str) -> Vec<History> {
+    let gateway = Gateway::open_for_test(path).unwrap();
+    let transaction = gateway.journal.connection.unchecked_transaction().unwrap();
+    let mut pending = Vec::new();
+    for index in 0..504 {
+        let history = maximal_history(maximal_request(index), signer);
+        let phase = if index < 472 {
+            "finalized"
+        } else {
+            phases[usize::try_from(index - 472).unwrap() % phases.len()]
+        };
+        history.insert(&transaction, phase);
+        if phase != "authorized" {
+            transaction
+                .execute(
+                    "UPDATE kubernetes_image_operations SET apply_accepted=1,
+                 requested_generation=?2, apply_resource_version=?3 WHERE operation_id=?1",
+                    params![history.request.operation_id, i64::MAX, "r".repeat(128)],
+                )
+                .unwrap();
+        }
+        if index >= 472 {
+            pending.push(history);
+        }
+    }
+    transaction.commit().unwrap();
+    pending
 }
 
 pub(super) fn maximal_adapter(path: &Path, operation: &SetDeploymentImageRequest) -> FakeAdapter {
@@ -203,227 +241,78 @@ pub(super) fn maximal_adapter(path: &Path, operation: &SetDeploymentImageRequest
     adapter
 }
 
-pub(super) async fn qualify_full_capacity_order(order: &str) {
-    let baseline = database_path(&format!("full-capacity-{order}-baseline"));
-    let mut gateway = maximal_gateway(&baseline);
+#[tokio::test]
+async fn full_identity_capacity_completes_maximal_mixed_phase_history() {
+    let path = database_path("full-capacity-completion");
+    let phases = ["authorized", "apply_started", "receiver_observed"];
+    let mut trust = journal::test_history::trust();
+    trust.key_id = "g".repeat(128);
+    let pending = capacity_history(&path, &phases, &trust.key_id);
+    fragmented_maximum_page_count(&path);
+    Journal::validate_replacement(&path, &[]).unwrap();
+    let mut gateway = Gateway::open(&path, trust.clone()).unwrap();
+    for index in 0..472 {
+        assert!(gateway
+            .retained_operation(&maximal_request(index).operation_id)
+            .unwrap()
+            .is_some());
+    }
+    let mut retained = stored_rows(&gateway.journal.connection);
     let key = "k".repeat(128);
     let settings = ReceiptSettings {
         signing_seed: &[13; 32],
         key_id: &key,
     };
-    let mut pending = Vec::new();
-    for index in 0..504 {
-        let identity = match order {
-            "ascending" => index,
-            "descending" => 503 - index,
-            _ if index % 2 == 0 => index / 2,
-            _ => 503 - index / 2,
-        };
-        let operation = maximal_request(identity);
-        let grant = maximal_grant(&operation);
-        if index >= 472 {
-            pending.push((operation, grant));
-            continue;
-        }
-        gateway
-            .submit_authorized_with_fault(&operation, &grant, None)
-            .unwrap();
-
-        let mut adapter = maximal_adapter(&baseline, &operation);
+    for (index, history) in pending.iter().enumerate() {
+        let id = &history.request.operation_id;
+        let original = retained.remove(id).unwrap();
+        let phase = phases[index % phases.len()];
+        // Decoding/authentication is a fixture precondition, not the expected transition oracle.
+        assert!(gateway.retained_operation(id).unwrap().is_some());
+        let mut adapter = maximal_adapter(&path, &history.request);
         assert_eq!(
             gateway
-                .run_operation_once_with_adapter(&operation.operation_id, &mut adapter)
+                .run_operation_once_with_adapter(id, &mut adapter)
                 .await
                 .unwrap(),
-            Some(OperationState::ReceiverObserved)
+            (phase != "receiver_observed").then_some(OperationState::ReceiverObserved)
         );
-        assert_eq!(adapter.apply_calls, 1);
-        gateway
-            .finalize_operation_receipt_once(&operation.operation_id, &settings)
-            .unwrap();
-    }
-
-    drop(gateway);
-    for phase in [
-        OperationState::Authorized,
-        OperationState::ApplyStarted,
-        OperationState::ReceiverObserved,
-    ] {
-        eprintln!("full-capacity case: order={order}, phase={phase:?}");
-        qualify_full_capacity_case(order, phase, &baseline, &pending).await;
-    }
-    fs::remove_dir_all(baseline.parent().unwrap()).unwrap();
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "one trace compares every retained row through full-capacity completion"
-)]
-async fn qualify_full_capacity_case(
-    order: &str,
-    phase: OperationState,
-    baseline: &Path,
-    pending: &[(SetDeploymentImageRequest, Vec<u8>)],
-) {
-    let path = database_path(&format!("full-capacity-{order}-{phase:?}"));
-    copy_closed_journal(baseline, &path);
-    let mut gateway = maximal_gateway(&path);
-    let key = "k".repeat(128);
-    let settings = ReceiptSettings {
-        signing_seed: &[13; 32],
-        key_id: &key,
-    };
-    // Keep the original insertion/advance order for the pending tail: its phase affects
-    // record growth and page layout. Only the identical completed prefix is reused.
-    for (operation, grant) in pending {
-        gateway
-            .submit_authorized_with_fault(operation, grant, None)
-            .unwrap();
-        if phase == OperationState::Authorized {
-            continue;
-        }
-        let mut adapter = maximal_adapter(&path, operation);
-        let fault =
-            (phase == OperationState::ApplyStarted).then_some(FaultPoint::ApplyOutcomeCommitted);
-        let result = gateway
-            .run_operation_once_with_adapter_and_fault(&operation.operation_id, &mut adapter, fault)
-            .await;
-        if fault.is_some() {
-            assert!(matches!(result, Err(GatewayError::InjectedFault)));
-        } else {
-            assert_eq!(result.unwrap(), Some(OperationState::ReceiverObserved));
-        }
-        assert_eq!(adapter.apply_calls, 1);
-    }
-    let overflow = request();
-    assert!(matches!(
-        gateway.submit_authorized_with_fault(&overflow, &maximal_grant(&overflow), None),
-        Err(GatewayError::JournalFull)
-    ));
-
-    let mut retained_rows = stored_rows(&gateway.journal.connection);
-
-    drop(gateway);
-    fragmented_maximum_page_count(&path);
-    for (operation, grant) in pending {
-        Journal::validate_replacement(&path, &[]).unwrap();
-        let mut gateway = maximal_gateway(&path);
-        assert_eq!(
-            gateway
-                .submit_authorized_with_fault(operation, grant, None)
-                .unwrap(),
-            SubmissionResult::Existing(phase)
-        );
-        let mut adapter = maximal_adapter(&path, operation);
-        gateway
-            .run_operation_once_with_adapter(&operation.operation_id, &mut adapter)
-            .await
-            .unwrap();
-        assert_eq!(
-            adapter.apply_calls,
-            usize::from(phase == OperationState::Authorized)
-        );
+        assert_eq!(adapter.apply_calls, usize::from(phase == "authorized"));
         assert_eq!(
             adapter.observe_calls,
-            usize::from(phase != OperationState::ReceiverObserved)
+            usize::from(phase != "receiver_observed")
         );
-
-        let frozen_statement = gateway
-            .journal
-            .receipt_statement(&operation.operation_id)
+        gateway
+            .finalize_operation_receipt_once(id, &settings)
             .unwrap();
-        assert!(matches!(
-            gateway.finalize_operation_receipt_once_with_fault(
-                &operation.operation_id,
-                &settings,
-                Some(FaultPoint::ReceiptCommitAcknowledgementLost)
-            ),
-            Err(GatewayError::InjectedFault)
-        ));
-        assert_eq!(
-            gateway
-                .journal
-                .receipt_statement(&operation.operation_id)
-                .unwrap(),
-            frozen_statement
-        );
-        let receipt = Gateway::read_loaded_receipt(
-            gateway
-                .journal
-                .operation(&operation.operation_id)
-                .unwrap()
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            gateway
-                .finalize_operation_receipt_once(&operation.operation_id, &settings)
-                .unwrap(),
-            None
-        );
-
-        drop(gateway);
-        Journal::validate_replacement(&path, &[]).unwrap();
-        let reopened = maximal_gateway(&path);
-        assert_eq!(
-            Gateway::read_loaded_receipt(
-                reopened
-                    .journal
-                    .operation(&operation.operation_id)
-                    .unwrap()
-                    .unwrap()
-            )
-            .unwrap(),
-            receipt
-        );
-
-        let mut current_rows = stored_rows(&reopened.journal.connection);
-        let completed_row = current_rows.remove(&operation.operation_id).unwrap();
-
-        let original_row = retained_rows.remove(&operation.operation_id).unwrap();
-        assert_eq!(
-            &completed_row[..9],
-            &original_row[..9],
-            "original request and signed authority changed"
-        );
-        assert_eq!(
-            &completed_row[38..40],
-            &original_row[38..40],
-            "approved snapshot changed"
-        );
-        if phase != OperationState::Authorized {
+        let mut current = stored_rows(&gateway.journal.connection);
+        let completed = current.remove(id).unwrap();
+        assert_eq!(completed[9], Value::Text("finalized".into()));
+        assert_eq!(&completed[..9], &original[..9]);
+        assert_eq!(&completed[38..40], &original[38..40]);
+        if phase != "authorized" {
+            assert_eq!(&completed[10..19], &original[10..19]);
+            assert_eq!(&completed[40..], &original[40..]);
+        }
+        if phase == "receiver_observed" {
+            assert_eq!(&completed[10..32], &original[10..32]);
+            assert_eq!(&completed[35..], &original[35..]);
+            // Bind signed bytes to independently authored frozen facts, not the row decoder.
             assert_eq!(
-                &completed_row[10..19],
-                &original_row[10..19],
-                "frozen attempt/outcome changed"
-            );
-            assert_eq!(
-                &completed_row[40..],
-                &original_row[40..],
-                "frozen preflight changed"
+                completed[33],
+                Value::Blob(receipt::sign_statement(&history.statement, &[13; 32], &key).unwrap())
             );
         }
-        if phase == OperationState::ReceiverObserved {
-            assert_eq!(
-                &completed_row[19..32],
-                &original_row[19..32],
-                "frozen receiver facts changed"
-            );
-            assert_eq!(
-                &completed_row[35..38],
-                &original_row[35..38],
-                "frozen conditions changed"
-            );
-        }
-        assert_eq!(
-            current_rows, retained_rows,
-            "an unrelated retained row changed"
-        );
-        current_rows.insert(operation.operation_id.clone(), completed_row);
-        retained_rows = current_rows;
+        assert_eq!(current, retained, "unrelated history changed");
+        retained.insert(id.clone(), completed);
     }
     assert_eq!(fs::metadata(&path).unwrap().len(), 64 * 1024 * 1024);
-    eprintln!("completed504 retained/32 {phase:?}, order={order}, fragmented16384-page database");
+    drop(gateway);
+    Journal::validate_replacement(&path, &[]).unwrap();
+    let reopened = Gateway::open(&path, trust).unwrap();
+    assert_eq!(stored_rows(&reopened.journal.connection), retained);
+    eprintln!("completed504 retained/32 mixed-phase identities in fragmented16384 pages");
+    drop(reopened);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
 
@@ -445,72 +334,44 @@ pub(super) fn park_receipt_after_sql(ready: PathBuf) {
     });
 }
 
-async fn failure_history(path: &Path) -> SetDeploymentImageRequest {
-    let mut gateway = Gateway::open_for_test(path).unwrap();
-    let mut selected = maximal_request(0);
-    selected.operation_id = "op-001".into();
-    for index in 0..504 {
-        let operation = if index == 503 {
-            selected.clone()
-        } else {
-            maximal_request(index + 1)
-        };
-        gateway
-            .submit_exact_for_test(&operation, &authorization(&operation))
-            .unwrap();
-        if index == 0 || index >= 472 {
-            let mut adapter = maximal_adapter(path, &operation);
-            gateway
-                .run_operation_once_with_adapter(&operation.operation_id, &mut adapter)
-                .await
-                .unwrap();
-            assert_eq!(adapter.apply_calls, 1);
-            if index == 0 {
-                gateway
-                    .finalize_operation_receipt_once(
-                        &operation.operation_id,
-                        &ReceiptSettings {
-                            signing_seed: &[13; 32],
-                            key_id: "earlier-receipt",
-                        },
-                    )
-                    .unwrap();
-            }
-        } else {
-            let LoadedOperation::Authorized(operation) = gateway
-                .journal
-                .operation(&operation.operation_id)
-                .unwrap()
-                .unwrap()
-            else {
-                unreachable!("newly submitted fixture is authorized");
-            };
-            gateway
-                .journal
-                .mark_not_attempted(&operation, TargetRejection::DeploymentNotFound)
-                .unwrap();
-        }
-    }
-    selected
-}
-
 #[tokio::test]
-async fn full_capacity_process_kills_before_sql_after_sql_and_after_commit_preserve_history() {
-    let baseline = database_path("full-capacity-kill-baseline");
-    let selected = failure_history(&baseline).await;
-    fragmented_maximum_page_count(&baseline);
-    for scenario in ["before_receipt_commit", "receipt_sql_executed", "receipt"] {
-        let path = database_path(&format!("full-capacity-kill-{scenario}"));
+async fn receipt_process_kills_before_sql_after_sql_and_after_commit_preserve_history() {
+    let baseline = database_path("receipt-kill-baseline");
+    let setup = Gateway::open_for_test(&baseline).unwrap();
+    let signer = "effect-gateway-authorization-test-key";
+    let selected = maximal_history(request(), signer);
+    selected.insert(&setup.journal.connection, "receiver_observed");
+    maximal_history(maximal_request(1), signer).insert(&setup.journal.connection, "finalized");
+    drop(setup);
+    let selected = selected.request;
+    for scenario in [
+        "before_receipt_commit",
+        "receipt_sql_executed",
+        "hot_rollback",
+        "receipt",
+    ] {
+        let path = database_path(&format!("receipt-kill-{scenario}"));
         copy_closed_journal(&baseline, &path);
         let before = stored_rows(&Connection::open(&path).unwrap());
         let ready = path.parent().unwrap().join("ready");
-        let mut child = spawn_process_child(scenario, &path, &ready, None, None);
+        let mut child = spawn_process_child(scenario, &path, &ready, None);
         wait_for_child_seam(&mut child, &ready);
         if scenario == "receipt_sql_executed" {
             let journal_path = PathBuf::from(format!("{}-journal", path.display()));
             assert!(fs::metadata(journal_path).unwrap().len() > 0);
         }
         kill_child(&mut child);
+        if scenario == "hot_rollback" {
+            let bytes = fs::read(format!("{}-journal", path.display())).unwrap();
+            assert_eq!(
+                &bytes[..8],
+                &[0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7]
+            );
+            let unrecovered = fs::read(&path).unwrap();
+            assert_ne!(unrecovered, fs::read(&baseline).unwrap());
+            assert!(Journal::validate_replacement(&path, &[]).is_err());
+            assert_eq!(fs::read(&path).unwrap(), unrecovered);
+        }
         let mut gateway = Gateway::open_for_test(&path).unwrap();
 
         let mut current_rows = stored_rows(&gateway.journal.connection);
@@ -796,7 +657,12 @@ async fn genuine_enospc_during_admission_and_receipt_recovers_without_resend() {
         });
         private_directory(&directory);
         let path = directory.join("journal.sqlite3");
-        let selected = failure_history(&path).await;
+        let selected = maximal_request(503);
+        capacity_history(
+            &path,
+            &["receiver_observed"],
+            "effect-gateway-authorization-test-key",
+        );
         maximum_page_count_freelist(&path, at_commit);
         Journal::validate_replacement(&path, &[]).unwrap();
         let gateway = Gateway::open_for_test(&path).unwrap();

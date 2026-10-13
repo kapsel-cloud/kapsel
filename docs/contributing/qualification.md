@@ -352,18 +352,17 @@ filesystem reservation, ENOSPC, power-loss or native/live qualification. The own
 
 ## Bounded storage failure qualification
 
-The normal package gate includes source-named SQLite write-plan checks, rollback-record accounting,
-concurrent admission at 31 unfinished identities, and three full-capacity receipt tests, one per
-insertion order. Each covers all three pending phases, retaining nine combinations. Closed,
-production-generated baseline histories are copied into isolated cases rather than rebuilding
-unchanged completed operations. The cases use maximal legal fields and valid fragmented freelists at
-16,384 pages, and compare all retained rows without repeatedly verifying unchanged signatures.
-Focused commands:
+The normal package gate includes executed SQLite write-plan checks, rollback-record accounting,
+last-slot competing connections and mixed-effect capacity checks. One independently authored history
+holds 472 completed identities and 32 maximal pending records across three phases. Real production
+writes complete those records in a fragmented 16,384-page file and compare every retained row.
+Shared application laws own interruption, acknowledgement-loss and no-resend matrices; physical
+completion does not repeat them for every insertion order. Focused commands:
 
 ```sh
 cargo test --locked -p kapsel --lib gateway::tests::storage -- --nocapture
 cargo test --locked -p kapsel --lib full_identity_capacity
-cargo test --locked -p kapsel --lib concurrent_submissions_at_31_unfinished
+cargo test --locked -p kapsel --lib both_capacity_limits_serialize_the_last_slot
 ```
 
 The separate genuine-ENOSPC lane requires Docker and Python 3.11 or later:
@@ -392,11 +391,14 @@ page ceiling. Both cases remove only their owned filler, recover original rows/g
 facts/earlier receipts, and complete without another mutation or observation. The main journal
 length observed before commit is finite evidence, not a sampled universal peak measurement.
 
-Default deterministic gates never start this container. Process-kill tests cover before receipt SQL,
-SQL-executed/precommit and after commit. None observes a kill inside SQLite commit. This lane uses
-real tmpfs exhaustion, not disk-backed durability, power loss, a native installation or live
-Kubernetes. See [completion accounting](../reference/storage.md#completion-accounting) for the
-separate source-backed page and main-rollback arguments.
+Default deterministic gates never start this container. A two-row process fixture checks before
+receipt SQL, SQL-executed/precommit and after commit. A separate uncommitted fixture edit spills
+pages under DELETE/FULL to create a genuinely hot rollback journal. Its header and changed main
+bytes are observed before read-only refusal and writable recovery. Owned writes still disable
+spilling. None of these checkpoints observes a kill inside SQLite commit. This lane uses real tmpfs
+exhaustion, not disk-backed durability, power loss, a native installation or live Kubernetes. See
+[completion accounting](../reference/storage.md#completion-accounting) for the separate
+source-backed page and main-rollback arguments.
 
 ## Journal version rejection
 

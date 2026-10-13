@@ -76,10 +76,12 @@ request, authority, attempt, receiver and receipt fields do not come from produc
 Unequal generation and replica values expose field swaps. Every corruption vector starts from a
 checked-valid row and exercises writable, retained-history and read-only publication readers.
 Kubernetes and Git retain their distinct typed-table checks. Shared SQL fixtures also supply format,
-capacity-layout and receipt-candidate tests; they do not replace production-generated full-capacity
-histories, competing-writer read views, rollback records, process commitment windows or ENOSPC. The
-full-capacity process trace owns the before-SQL, SQL-executed/precommit and committed-receipt
-observations without a second small receipt process journey.
+capacity-layout, receipt-candidate and full-capacity records. Production writes own actual
+completion; independent row comparisons own unchanged authority, frozen facts and original bytes.
+One maximal mixed-phase completion witness replaces the insertion-order/phase lifecycle matrix. A
+two-row process fixture owns before-SQL, SQL-executed/precommit, hot rollback and committed-receipt
+observations. Competing-writer read views, rollback records and genuine ENOSPC remain separate
+physical owners.
 
 Kubernetes live qualification uses one packaged-binary workflow rather than source/test-hook
 journeys. Its operator-owned HTTP barriers establish actual conditional conflicts and process-loss

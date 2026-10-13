@@ -180,15 +180,35 @@ Spare space in the conservative bound is not permission to raise the 504/32 limi
 
 [Accepted-layout tests](qualification.md#accepted-journal-layouts) check physical rejection and
 legitimate reopening.
-[Storage qualification](qualification.md#bounded-storage-failure-qualification) checks owned write
-plans, rollback accounting, last-slot concurrency and full-capacity completion. Its full-capacity
-cases cover all nine insertion-order/pending-phase combinations, fragmented 16,384-page files and
-exact preservation of other history. The separate tmpfs lane produces real, bounded ENOSPC.
+[Storage qualification](qualification.md#bounded-storage-failure-qualification) has these distinct
+owners. All fixtures and production write statements remain part of the maintained assurance cost.
 
-Process-kill tests stop execution before SQL, after SQL but before commit, and after commit. They do
-not observe a kill inside SQLite commit. These tests complement the source argument without
-measuring a universal allocation peak. Tmpfs exhaustion does not establish disk-backed power-loss
-durability, native installed-host behaviour or live Kubernetes results.
+| Observation                                                                        | Owner                                                                  |
+| ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Exact policy boundaries, existing identity and competing last-slot connections     | Gateway `validation`; journal Git mixed-effect counts and finalization |
+| Lifecycle interruptions, commit alternatives, immutable evidence and useful repair | Independent application laws on both stores                            |
+| Encoded payload, sparse trees, padded schema and noncanonical header controls      | `capacity_layout`                                                      |
+| Configured-full completion, executed SQL plans and main rollback framing           | `storage`                                                              |
+| Before-SQL, precommit, committed receipt and genuine hot rollback reopening        | Two-row `storage` process fixture                                      |
+| Actual admission, receipt-SQL and receipt-commit filesystem exhaustion             | Bounded Linux tmpfs lane                                               |
+
+The configured-full witness independently inserts 472 completed and 32 maximal pending records. It
+then executes production writes across authorized, attempted and observed phases in one fragmented
+16,384-page file. Raw row comparisons bind unchanged neighbours and original bytes through reopen.
+Insertion-order and acknowledgement-loss lifecycle matrices belong to neither this witness nor the
+page argument. A new record field needs local SQL/decoder and capacity-premise checks, not another
+full-capacity process world. A new effect reuses the application laws and aggregate capacity owner;
+its record/index bounds and actual write shapes still need validation.
+
+These are measured witnesses, not a universal allocation-peak proof. The retained and transient
+source arguments above remain necessary for all accepted layouts. No accepted encoding, history or
+format version changes. Long retained keys, equivalent padded schema SQL, sparse nonempty trees and
+fragmented full-length files remain supported within their bounds.
+
+Process kills stop before SQL, after SQL but before commit, and after commit. The hot-rollback case
+uses an external uncommitted spilling edit, not an owned-write setting change. None observes a kill
+inside SQLite commit. Tmpfs exhaustion does not establish disk-backed power-loss durability, native
+installed-host behaviour or live Kubernetes results.
 
 A full filesystem, failed sync or lost storage can still prevent completion. An indeterminate commit
 still needs a stored read. None of those failures can manufacture a receiver result or grant another

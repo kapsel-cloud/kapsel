@@ -42,22 +42,33 @@ impl History {
         request: SetDeploymentImageRequest,
         approved_target: Option<ApprovedTarget>,
     ) -> Self {
+        Self::with_authority(request, approved_target, "snapshot-auth", "snapshot-signer")
+    }
+
+    pub(in crate::gateway) fn with_authority(
+        request: SetDeploymentImageRequest,
+        approved_target: Option<ApprovedTarget>,
+        authorization_id: &str,
+        key_id: &str,
+    ) -> Self {
         let approval = ExactAuthorization {
             approved_target: approved_target.clone(),
-            authorization_id: "snapshot-auth".into(),
+            authorization_id: authorization_id.into(),
             operation_id: request.operation_id.clone(),
             namespace: request.namespace.clone(),
             deployment: request.deployment.clone(),
             container: request.container.clone(),
             immutable_image_digest: request.immutable_image_digest.clone(),
         };
-        let signed = sign_authorization_grant(&approval, &[7; 32], "snapshot-signer").unwrap();
-        let verified = verify_authorization_grant(&signed, &trust()).unwrap();
+        let signed = sign_authorization_grant(&approval, &[7; 32], key_id).unwrap();
+        let mut appointment = trust();
+        appointment.key_id = key_id.into();
+        let verified = verify_authorization_grant(&signed, &appointment).unwrap();
         let statement = ReceiptStatement {
             approved_target,
             operation_id: request.operation_id.clone(),
-            authorization_id: "snapshot-auth".into(),
-            authorization_signer_key_id: "snapshot-signer".into(),
+            authorization_id: authorization_id.into(),
+            authorization_signer_key_id: key_id.into(),
             authorization_grant_digest: digest(&signed),
             namespace: request.namespace.clone(),
             deployment: request.deployment.clone(),

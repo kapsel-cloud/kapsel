@@ -26,6 +26,24 @@ fn process_kill_child() {
             .unwrap();
         unreachable!("the parent must kill the child while apply is pending");
     }
+    if scenario == "hot_rollback" {
+        // Opening must recover genuinely hot history, not only an unused zero-header journal.
+        // This external fixture spills an uncommitted edit; owned writes still disable spilling.
+        let connection = Connection::open(&database).unwrap();
+        connection
+            .execute_batch(
+                "PRAGMA synchronous=FULL; PRAGMA journal_mode=DELETE;
+             PRAGMA cache_spill=ON; PRAGMA cache_size=1; BEGIN IMMEDIATE;
+             UPDATE kubernetes_image_operations SET receipt_bytes=zeroblob(16384)
+             WHERE operation_id='op-001'",
+            )
+            .unwrap();
+        connection.cache_flush().unwrap();
+        fs::write(ready, b"hot-rollback-before-commit").unwrap();
+        loop {
+            std::thread::park();
+        }
+    }
     assert!(matches!(
         scenario.as_str(),
         "receipt" | "before_receipt_commit" | "receipt_sql_executed"
@@ -67,7 +85,7 @@ async fn process_kill_after_provider_side_effect_recovers_without_second_mutatio
     }
     let ready = path.parent().unwrap().join("mutation-ready");
     let patch_count = path.parent().unwrap().join("patch-count");
-    let mut child = spawn_process_child("mutation", &path, &ready, Some(&patch_count), None);
+    let mut child = spawn_process_child("mutation", &path, &ready, Some(&patch_count));
     wait_for_child_seam(&mut child, &ready);
     assert_eq!(fs::read_to_string(&patch_count).unwrap(), "1");
     kill_child(&mut child);
