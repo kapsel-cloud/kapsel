@@ -52,7 +52,6 @@ class Launch:
     caller_source: Path
     hook_source: Path
     artifact: Path | None = None
-    retained: Path | None = None
 
     @property
     def installed(self) -> bool:
@@ -236,7 +235,7 @@ def exercise(launch: Launch, case: str) -> None:
             directory.mkdir(mode=0o755, exist_ok=True)
             directory.chmod(0o755)
         assert launch.artifact is not None
-        install_binaries(launch.retained or launch.artifact)
+        install_binaries(launch.artifact)
     caller = launch.root / "caller/fresh_session_caller.py"
     caller.write_bytes(
         launch.caller_source.read_bytes().replace(
@@ -577,7 +576,7 @@ def exercise(launch: Launch, case: str) -> None:
             "inspection": report["status"],
             "identical_retained_receipt": True,
             "finalized_submission": retained_admission,
-            "retained_format6_replacement": launch.retained is not None,
+            "cold_binary_replacement": launch.installed,
             "caller_private_access_denied": launch.installed,
             "signing_repair_without_receiver": case == "healthy",
         }
@@ -592,7 +591,6 @@ def exercise(launch: Launch, case: str) -> None:
 
 def main() -> None:
     artifact = Path("/artifact")
-    retained = Path("/retained-artifact")
     exercise(
         Launch(
             Path("/"),
@@ -603,7 +601,6 @@ def main() -> None:
             Path("/inputs/fresh_session_caller.py"),
             Path("/inputs/git_receiver_hook.py"),
             artifact,
-            retained if retained.is_dir() else None,
         ),
         os.environ["GIT_CASE"],
     )

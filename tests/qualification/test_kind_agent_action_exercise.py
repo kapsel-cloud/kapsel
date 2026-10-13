@@ -1,8 +1,10 @@
 """Offline checks for the packaged journey's independent retained-evidence reader."""
 
 import ast
+import contextlib
 import hashlib
 import http.server
+import io
 import json
 import os
 import pathlib
@@ -398,6 +400,26 @@ class BoundedSubprocessTests(unittest.TestCase):
 
 
 class PackagedRunnerTests(unittest.TestCase):
+    def test_cli_rejects_retired_inputs_before_any_setup(self) -> None:
+        arguments = ["runner", "--archive", "/selected", "--revision", "a" * 40]
+        for extra in ([], ["--retained-archive", "/other"], ["--retained-revision", "b" * 40]):
+            with (
+                self.subTest(extra=extra),
+                mock.patch("sys.argv", arguments + extra),
+                mock.patch.object(JOURNEY.tempfile, "mkdtemp") as setup,
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                if extra:
+                    with self.assertRaises(SystemExit) as failure:
+                        JOURNEY.main()
+                    self.assertEqual(failure.exception.code, 2)
+                else:
+                    selected = JOURNEY.parse_arguments()
+                    self.assertEqual(selected.archive, pathlib.Path("/selected"))
+                    self.assertEqual(selected.revision, "a" * 40)
+                    self.assertFalse(selected.agent)
+                setup.assert_not_called()
+
     def test_journey_streams_exact_fixture_bytes_through_a_real_process(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)

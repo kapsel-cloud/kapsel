@@ -34,13 +34,11 @@ def exercise_case(
     inputs: Path,
     evidence: Path,
     source: bytes,
-    retained: Path | None = None,
 ) -> dict[str, object]:
     """Transfer the operator fixture into one owned, network-disabled environment."""
     name = "kapsel-git-" + uuid.uuid4().hex[:12]
     evidence.mkdir(mode=0o700)
     owned = False
-    retained_mount = [] if retained is None else ["--volume", f"{retained}:/retained-artifact:ro"]
     try:
         run(
             [
@@ -57,7 +55,6 @@ def exercise_case(
                 "--memory=1g",
                 "--volume",
                 f"{extracted}:/artifact:ro",
-                *retained_mount,
                 "--env",
                 f"GIT_CASE={case}",
                 "-i",
@@ -89,6 +86,7 @@ def exercise_case(
             or summary.get("inspection") != "INSPECTED"
             or summary.get("identical_retained_receipt") is not True
             or summary.get("caller_private_access_denied") is not True
+            or summary.get("cold_binary_replacement") is not True
             or summary.get("finalized_submission")
             != {"version": 1, "status": "ADMITTED", "phase": "finalized"}
             or (case == "healthy" and summary.get("signing_repair_without_receiver") is not True)
@@ -103,13 +101,7 @@ def exercise_case(
             run(["docker", "rm", "-f", name])
 
 
-def qualify(
-    archive: Path,
-    revision: str,
-    git: Path,
-    retained_archive: Path | None = None,
-    retained_revision: str | None = None,
-) -> Path:
+def qualify(archive: Path, revision: str, git: Path) -> Path:
     os.umask(0o077)
     workspace = Path(tempfile.mkdtemp(prefix="kapsel-git-artifact-"))
     print(f"Private evidence workspace: {workspace}", flush=True)
@@ -130,21 +122,6 @@ def qualify(
         raise RuntimeError("packaged Git qualification requires a clean-source artifact")
     if not git.is_file() or not os.access(git, os.X_OK):
         raise RuntimeError("--git must select an executable regular file")
-    retained = None
-    if retained_archive is not None:
-        if retained_revision is None:
-            raise RuntimeError("retained archive requires its exact revision")
-        retained_archive = retained_archive.resolve(strict=True)
-        retained = artifact.extract_release(
-            retained_archive,
-            Path(str(retained_archive) + ".sha256"),
-            retained_revision,
-            workspace / "retained-extracted",
-        )
-        if json.loads((retained / "RELEASE-METADATA.json").read_bytes())["source_dirty"]:
-            raise RuntimeError("retained history requires a clean-source producer")
-    elif retained_revision is not None:
-        raise RuntimeError("retained revision requires an archive")
     inputs = workspace / "inputs"
     inputs.mkdir(mode=0o700)
     shutil.copyfile(CALLER_SOURCE, inputs / CALLER_SOURCE.name)
@@ -159,19 +136,11 @@ def qualify(
     hook_digest = hashlib.sha256(hook_source).hexdigest()
     (workspace / (HOOK_SOURCE.name + ".sha256")).write_text(hook_digest + "\n")
 
-    summaries = [
-        exercise_case(case, extracted, inputs, workspace / case, source, retained) for case in CASES
-    ]
+    summaries = [exercise_case(case, extracted, inputs, workspace / case, source) for case in CASES]
     summary = {
         "source_revision": revision,
         "archive_sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
         "git_sha256": hashlib.sha256(git.read_bytes()).hexdigest(),
-        "retained_source_revision": retained_revision,
-        "retained_archive_sha256": (
-            hashlib.sha256(retained_archive.read_bytes()).hexdigest()
-            if retained_archive is not None
-            else None
-        ),
         "exercise_sha256": hashlib.sha256(source).hexdigest(),
         "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "caller_sha256": hashlib.sha256((inputs / CALLER_SOURCE.name).read_bytes()).hexdigest(),
@@ -192,10 +161,8 @@ def main() -> None:
     parser.add_argument(
         "--git", required=True, type=Path, help="accepted Linux Git 2.55.0 executable"
     )
-    parser.add_argument("--retained-archive", type=Path)
-    parser.add_argument("--retained-revision")
     args = parser.parse_args()
-    qualify(args.archive, args.revision, args.git, args.retained_archive, args.retained_revision)
+    qualify(args.archive, args.revision, args.git)
 
 
 if __name__ == "__main__":

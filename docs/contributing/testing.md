@@ -81,7 +81,9 @@ standalone verifier never executes binaries or changes the host. The archive's e
 qualification program owns smoke and one installed procedure with direct-process/systemd profiles;
 packaged crash/live receiver lanes remain separate. Signer repair, trust withdrawal and unsupported
 history partitions stay with shared laws, command/startup checks and packaged receiver owners, not
-another installed lifecycle matrix.
+another installed lifecycle matrix. Packaged Git and Kubernetes qualification each select one clean
+artifact. Their standalone fixtures reinstall the same selected bytes at retained cold replacement
+windows; they do not maintain a second producer/extraction/mount path for upgrades.
 
 Journal decoder checks use a concrete independently authored SQLite history builder. Expected
 request, authority, attempt, receiver and receipt fields do not come from production row writers.

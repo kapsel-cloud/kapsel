@@ -294,8 +294,7 @@ def main() -> None:
     for directory in ("/usr/libexec", "/usr/libexec/kapsel"):
         pathlib.Path(directory).mkdir(mode=0o755, exist_ok=True)
         pathlib.Path(directory).chmod(0o755)
-    retained_artifact = pathlib.Path("/retained-artifact")
-    install_binaries(retained_artifact if retained_artifact.is_dir() else pathlib.Path("/artifact"))
+    install_binaries(pathlib.Path("/artifact"))
     for path, mode in (("/etc/kapsel", 0o700), ("/var/lib/kapsel", 0o700), ("/run/kapsel", 0o750)):
         pathlib.Path(path).mkdir(mode=mode)
         pathlib.Path(path).chmod(mode)
@@ -773,12 +772,9 @@ def main() -> None:
                     "stored_read_ms": stored_read_ms,
                     "receipt_sha256": digest,
                     "receipt_commit_loss": retained is not None,
-                    "retained_format6_replacement": retained is not None
-                    and retained_artifact.is_dir(),
-                    "retained_attempted_recovery": case == "service-loss"
-                    and retained_artifact.is_dir(),
-                    "original_healthy_receipt_preserved": case == "caller-loss"
-                    and retained_artifact.is_dir(),
+                    "cold_binary_replacement": case == "service-loss",
+                    "retained_attempted_recovery": case == "service-loss",
+                    "original_healthy_receipt_preserved": case == "caller-loss",
                 }
             )
             assert not pathlib.Path("/evidence/barrier.violation").exists(), (

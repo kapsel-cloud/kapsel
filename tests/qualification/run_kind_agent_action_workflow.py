@@ -640,8 +640,6 @@ def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive", required=True, type=pathlib.Path)
     parser.add_argument("--revision", required=True)
-    parser.add_argument("--retained-archive", type=pathlib.Path)
-    parser.add_argument("--retained-revision")
     parser.add_argument(
         "--agent",
         action="store_true",
@@ -654,8 +652,6 @@ def parse_arguments() -> argparse.Namespace:
         "--codex-auth", type=pathlib.Path, default=pathlib.Path.home() / ".codex/auth.json"
     )
     args = parser.parse_args()
-    if (args.retained_archive is None) != (args.retained_revision is None):
-        parser.error("retained archive and exact revision must be supplied together")
     if args.agent:
         if args.codex_binary is None:
             parser.error("--agent requires --codex-binary with an accepted Linux executable")
@@ -716,20 +712,6 @@ def main() -> None:
 
     if json.loads((extracted / "RELEASE-METADATA.json").read_bytes())["source_dirty"]:
         raise RuntimeError("packaged Kubernetes qualification requires a clean-source artifact")
-    retained = None
-    retained_mount = []
-    if args.retained_archive is not None:
-        args.retained_archive = args.retained_archive.resolve(strict=True)
-        retained = artifact.extract_release(
-            args.retained_archive,
-            pathlib.Path(str(args.retained_archive) + ".sha256"),
-            args.retained_revision,
-            workspace / "retained-extracted",
-        )
-        if json.loads((retained / "RELEASE-METADATA.json").read_bytes())["source_dirty"]:
-            raise RuntimeError("retained history requires a clean-source producer")
-        retained_mount = ["--volume", f"{retained}:/retained-artifact:ro"]
-
     name = "kapsel-journey-" + uuid.uuid4().hex[:10]
     kubeconfig = workspace / "admin.yaml"
     inputs = workspace / "inputs"
@@ -972,7 +954,6 @@ nodes:
                 "--memory=4g" if args.agent else "--memory=1g",
                 "--volume",
                 f"{extracted}:/artifact:ro",
-                *retained_mount,
                 "-i",
                 RUNNER,
                 "python3",
@@ -1005,12 +986,6 @@ nodes:
         summary = {
             "source_revision": args.revision,
             "archive_sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
-            "retained_source_revision": args.retained_revision,
-            "retained_archive_sha256": (
-                hashlib.sha256(args.retained_archive.read_bytes()).hexdigest()
-                if args.retained_archive is not None
-                else None
-            ),
             "exercise_sha256": hashlib.sha256(exercise_source).hexdigest(),
             "barrier_sha256": hashlib.sha256(barrier_source).hexdigest(),
             "webhook_sha256": hashlib.sha256(webhook_source).hexdigest(),

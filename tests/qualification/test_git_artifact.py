@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Offline artifact custody, evidence and owned-container retirement checks."""
 
+import contextlib
 import hashlib
+import io
 import json
 import subprocess
 import tempfile
@@ -22,6 +24,7 @@ def summary(case: str) -> dict[str, object]:
         "identical_retained_receipt": True,
         "finalized_submission": {"version": 1, "status": "ADMITTED", "phase": "finalized"},
         "caller_private_access_denied": True,
+        "cold_binary_replacement": True,
         "signing_repair_without_receiver": case == "healthy",
     }
 
@@ -41,6 +44,24 @@ class GitArtifactTests(unittest.TestCase):
         spec = SimpleNamespace(loader=SimpleNamespace(exec_module=lambda module: None))
         module = SimpleNamespace(extract_release=mock.Mock(return_value=extracted))
         return workspace, extracted, archive, git, spec, module
+
+    def test_cli_rejects_retired_inputs_before_qualification(self):
+        arguments = ["runner", "--archive", "/selected", "--revision", "a" * 40, "--git", "/git"]
+        for extra in ([], ["--retained-archive", "/other"], ["--retained-revision", "b" * 40]):
+            with (
+                self.subTest(extra=extra),
+                mock.patch("sys.argv", arguments + extra),
+                mock.patch.object(JOURNEY, "qualify") as qualify,
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                if extra:
+                    with self.assertRaises(SystemExit) as failure:
+                        JOURNEY.main()
+                    self.assertEqual(failure.exception.code, 2)
+                    qualify.assert_not_called()
+                else:
+                    JOURNEY.main()
+                    qualify.assert_called_once_with(Path("/selected"), "a" * 40, Path("/git"))
 
     def test_dirty_source_refuses_before_docker(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -109,15 +130,21 @@ class GitArtifactTests(unittest.TestCase):
                     JOURNEY.subprocess, "run", return_value=SimpleNamespace(returncode=0)
                 ) as execution,
             ):
-                self.assertEqual(
-                    JOURNEY.qualify(archive, "a" * 40, git, archive, "b" * 40), workspace
-                )
+                self.assertEqual(JOURNEY.qualify(archive, "a" * 40, git), workspace)
                 result = json.loads((workspace / "summary.json").read_bytes())
                 self.assertEqual(result["source_revision"], "a" * 40)
-                self.assertEqual(result["retained_source_revision"], "b" * 40)
-                self.assertIn(
-                    f"{extracted}:/retained-artifact:ro", docker.call_args_list[0].args[0]
+                module.extract_release.assert_called_once_with(
+                    archive.resolve(),
+                    Path(str(archive.resolve()) + ".sha256"),
+                    "a" * 40,
+                    workspace / "extracted",
                 )
+                self.assertNotIn("retained_source_revision", result)
+                self.assertNotIn("retained_archive_sha256", result)
+                for call in docker.call_args_list:
+                    if call.args[0][:2] == ["docker", "create"]:
+                        volumes = [arg for arg in call.args[0] if arg.endswith(":ro")]
+                        self.assertEqual(volumes, [f"{extracted}:/artifact:ro"])
                 for key, path in (
                     ("archive", archive),
                     ("git", git),
@@ -155,6 +182,7 @@ class GitArtifactTests(unittest.TestCase):
             [],
             {**summary("healthy"), "receipt_sha256": ""},
             {**summary("healthy"), "identical_retained_receipt": False},
+            {**summary("healthy"), "cold_binary_replacement": False},
             {**summary("healthy"), "finalized_submission": {"status": "NO_SELECTION"}},
             {
                 **summary("healthy"),

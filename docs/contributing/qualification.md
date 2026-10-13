@@ -81,6 +81,10 @@ python3 tests/qualification/run_kind_agent_action_workflow.py \
 
 ### Packaged workflow evidence
 
+Both packaged receiver lanes select one clean archive and exact revision. Cold binary replacement
+reinstalls those selected bytes; there is no second producer archive or cross-version qualification
+mode.
+
 The runner creates one uniquely named, pinned kind cluster and an isolated Linux service container.
 It transfers only extracted production binaries, their public key-generation procedure and scoped
 fixture authority into the operating environment. It never builds a test-feature binary or uses a
@@ -275,7 +279,8 @@ ref and hook inputs, observation-only same-ID recovery, original receipt retriev
 catalog/material withdrawal, and detached inspection. Hook inputs are not packet counts or proof of
 complete hook delivery. The runner removes the containers and retains the printed private evidence
 workspace. This is not native systemd, power-loss, or live-repository qualification. Current-release
-restart/reconnect evidence is required. A prior-artifact replacement matrix is not a release gate.
+restart/reconnect evidence is required. The runners accept only the selected archive and revision;
+`--retained-archive` and `--retained-revision` are rejected before qualification setup.
 
 See the [Git service example](../guides/git_transition.md) for material, semantics and evidence
 limits. Run `cargo xtask ci` as the deterministic gate. Service startup or protocol composition
