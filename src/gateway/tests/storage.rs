@@ -242,6 +242,7 @@ pub(super) fn maximal_adapter(path: &Path, operation: &SetDeploymentImageRequest
 }
 
 #[tokio::test]
+#[ignore = "maximal configured completion belongs to cargo xtask qualify storage"]
 async fn full_identity_capacity_completes_maximal_mixed_phase_history() {
     let path = database_path("full-capacity-completion");
     let phases = ["authorized", "apply_started", "receiver_observed"];
@@ -312,6 +313,7 @@ async fn full_identity_capacity_completes_maximal_mixed_phase_history() {
     let reopened = Gateway::open(&path, trust).unwrap();
     assert_eq!(stored_rows(&reopened.journal.connection), retained);
     eprintln!("completed504 retained/32 mixed-phase identities in fragmented16384 pages");
+    eprintln!("KAPSEL_MAXIMAL_COMPLETION_PASSED");
     drop(reopened);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
@@ -645,6 +647,10 @@ async fn qualify_admission_enospc() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 #[ignore = "requires tests/qualification/run_storage_enospc.py bounded container tmpfs"]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep ENOSPC placement, raw-row repair and no-resend assertions in one causal trace"
+)]
 async fn genuine_enospc_during_admission_and_receipt_recovers_without_resend() {
     use std::os::unix::fs::MetadataExt as _;
     qualify_admission_enospc().await;
@@ -736,8 +742,24 @@ async fn genuine_enospc_during_admission_and_receipt_recovers_without_resend() {
             frozen_statement
         );
         let mut completed = stored_rows(&gateway.journal.connection);
-        completed.remove(&selected.operation_id);
-        retained_rows.remove(&selected.operation_id);
+        let completed_row = completed.remove(&selected.operation_id).unwrap();
+        let original_row = retained_rows.remove(&selected.operation_id).unwrap();
+        assert_eq!(completed_row[9], Value::Text("finalized".into()));
+        for fields in [0..9, 10..32, 35..completed_row.len()] {
+            assert_eq!(completed_row[fields.clone()], original_row[fields]);
+        }
+        assert_eq!(
+            completed_row[33],
+            Value::Blob(
+                receipt::sign_statement(
+                    &maximal_history(selected.clone(), "effect-gateway-authorization-test-key")
+                        .statement,
+                    &[13; 32],
+                    "enospc-recovered",
+                )
+                .unwrap()
+            )
+        );
         assert_eq!(
             completed, retained_rows,
             "completion changed unrelated history"
@@ -747,8 +769,15 @@ async fn genuine_enospc_during_admission_and_receipt_recovers_without_resend() {
         Journal::validate_replacement(&path, &[]).unwrap();
         drop(Gateway::open_for_test(&path).unwrap());
         fs::remove_dir_all(directory).unwrap();
+        eprintln!(
+            "{}",
+            if at_commit {
+                "KAPSEL_RECEIPT_COMMIT_ENOSPC_PASSED"
+            } else {
+                "KAPSEL_RECEIPT_SQL_ENOSPC_PASSED"
+            }
+        );
     }
-    eprintln!("KAPSEL_REAL_ENOSPC_CASES_PASSED");
 }
 
 #[tokio::test]

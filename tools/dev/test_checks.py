@@ -52,6 +52,7 @@ class SelectionTests(unittest.TestCase):
                     self.assertFalse(set(command) & {"docker", "kind", "systemctl", "llvm-cov"})
                     self.assertNotIn("--include-ignored", command)
                     self.assertFalse(any("assemble_artifact.py" == part for part in command))
+                    self.assertFalse(any("run_storage_enospc.py" in part for part in command))
                 if area == "docs":
                     self.assertFalse(any(command[0] == "cargo" for command in commands))
 
@@ -209,6 +210,31 @@ class SelectionTests(unittest.TestCase):
 
 
 class QualificationRoutingTests(unittest.TestCase):
+    def test_storage_forwards_arguments_only_to_its_current_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            python = Path(temporary) / "python3"
+            python.write_text('#!/bin/sh\nprintf "%s\\n" "$PWD" "$@"\n')
+            python.chmod(0o755)
+            result = subprocess.run(
+                ["sh", "scripts/qualify.sh", "storage", "--prepare-only", "--output", "new-output"],
+                cwd=ROOT,
+                env={**os.environ, "PATH": temporary + ":/bin:/usr/bin"},
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=True,
+            )
+        self.assertEqual(
+            result.stdout.splitlines(),
+            [
+                str(ROOT),
+                "tests/qualification/run_storage_enospc.py",
+                "--prepare-only",
+                "--output",
+                "new-output",
+            ],
+        )
+
     def test_archive_qualifiers_refuse_missing_archive_before_running_owner(self) -> None:
         for boundary in ("artifact", "reproducibility", "kubernetes", "git", "native"):
             result = subprocess.run(

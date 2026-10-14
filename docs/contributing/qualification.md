@@ -14,7 +14,7 @@ the current owners below; they do not install prerequisites or assemble an impli
 
 | Boundary        | Current command arguments and owner                                                                                                                                  |
 | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| storage         | `qualify storage`: existing ENOSPC launcher; maximal capacity remains in core until its storage cutover                                                              |
+| storage         | `qualify storage [--build-cache DIRECTORY] [--output NEW_DIRECTORY]`: maximal completion and three actual ENOSPC placements                                          |
 | artifact        | `qualify artifact --archive A`: existing extracted smoke/direct-guide artifact tests                                                                                 |
 | reproducibility | `qualify reproducibility --archive A`: independently assembles B against selected A                                                                                  |
 | kubernetes      | `qualify kubernetes --archive A --revision R [--case CASE]`: current packaged runner                                                                                 |
@@ -413,33 +413,54 @@ filesystem reservation, ENOSPC, power-loss or native/live qualification. The own
 
 ## Bounded storage failure qualification
 
-The normal package gate includes executed SQLite write-plan checks, rollback-record accounting,
-last-slot competing connections and mixed-effect capacity checks. One independently authored history
-holds 472 completed identities and 32 maximal pending records across three phases. Real production
-writes complete those records in a fragmented 16,384-page file and compare every retained row.
-Shared application laws own interruption, acknowledgement-loss and no-resend matrices; physical
-completion does not repeat them for every insertion order. Focused commands:
+Normal `check core` includes executed SQLite write-plan/configuration checks, rollback-record
+accounting, accepted layouts, last-slot competing connections and mixed-effect capacity checks. It
+also runs the bounded receipt-process witnesses below. It never starts Docker or runs maximal
+completion or actual ENOSPC. Focused local command:
 
 ```sh
-cargo test --locked -p kapsel --lib gateway::tests::storage -- --nocapture
-cargo test --locked -p kapsel --lib full_identity_capacity
-cargo test --locked -p kapsel --lib both_capacity_limits_serialize_the_last_slot
+cargo xtask test core
 ```
 
-The separate genuine-ENOSPC lane requires Docker and Python 3.11 or later:
+Storage qualification requires Docker with `linux/amd64` execution, Python 3.11 or later, and
+network access for uncached dependencies. The pinned image must supply the source's selected Rust
+toolchain. Use a bounded worker filesystem for the persistent build cache and evidence:
 
 ```sh
-python3 tests/qualification/run_storage_enospc.py
+cargo xtask qualify storage --output /tmp/new-storage-evidence
 ```
 
-The runner creates a disposable pinned Linux container with a read-only source bind, no additional
-capabilities, a 2-GiB memory ceiling, a 96-MiB tmpfs and an 1,800-second command timeout. Build
-output and controls stay outside the full mount, inside the container. The runner saves logs and a
-complete dirty-source snapshot in the printed host temporary directory. It changes no host
-configuration and fills no host filesystem. The fixture verifies the exact tmpfs mount/type/size and
-caps actual filler writes at 128 MiB even if its mount precondition is wrong. It explicitly runs the
-otherwise ignored test and requires evidence that all three cases executed, rather than accepting an
-empty test selection.
+The runner uses one owned container with read-only source and root filesystem, no additional
+capabilities, two CPUs, 2 GiB memory without extra swap, and at most 256 PIDs. Its temporary mounts
+limit `/tmp` to 64 MiB and `/kapsel-enospc` to 96 MiB. Container lifetime is 1,800 seconds; build
+allows 1,200 seconds and each exact test allows 300 seconds. Every command has an 8-MiB output
+ceiling; Docker retains at most two 8-MiB container logs. Exceeding a ceiling fails rather than
+truncating a passing result. Cleanup verifies the invocation label and removes only the immutable
+container ID, then checks its absence. Cleanup uncertainty is failure, even after passing tests.
+
+Cargo builds the library test executable once through `--no-run --locked` and reports its exact
+path. The persistent default cache is `target/storage-linux-amd64`; `--build-cache DIRECTORY`
+selects an existing compatible cache. Cargo's fresh/compiled artifact counts distinguish reuse from
+rebuilding. `qualify storage --prepare-only` builds and lists both exact cases without running
+physical tests; its result is `PREPARED`, never `QUALIFIED`. This permits a cache-reuse check
+without repeating accepted physical evidence.
+
+`result.json` records revision, committed tree, dirty indication, runner and executable SHA256,
+image/target/toolchain, environment, named and executed cases, cleanup ID, and setup/build/execution
+timings. `commands.json` retains literal commands, outcomes, elapsed time and bounded log names.
+Development runs may be dirty and make no source-reconstruction claim. Release evidence requires
+clean candidate source S and records these source-test binaries separately from shipped archive A.
+
+The first exact case independently inserts 472 completed identities and 32 maximal pending records
+across three phases. Production writes complete them in one fragmented 16,384-page file; direct row
+comparisons and reopen bind original authority, frozen facts and unrelated peers. The larger
+Kubernetes record supplies maximal geometry; Git remains covered by aggregate counts and actual SQL
+premises. Shared application laws own interruption, acknowledgement-loss and no-resend matrices.
+
+The second exact case verifies the dedicated tmpfs mount/type/size and caps filler writes at 128
+MiB. Selection must contain exactly one named test. Maximal completion and each of the three ENOSPC
+placements must emit their own completion marker after their assertions and repair. Zero selection,
+missing markers, timeout, interruption, nonzero exit or unverified cleanup cannot qualify.
 
 An admission case first exhausts the tmpfs before inserting a new identity. It requires a storage
 error without admission acknowledgement, preserved earlier receipt/history bytes and explicit

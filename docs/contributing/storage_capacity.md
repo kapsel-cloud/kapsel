@@ -188,17 +188,19 @@ owners. All fixtures and production write statements remain part of the maintain
 | Exact policy boundaries, existing identity and competing last-slot connections     | Gateway `validation`; journal Git mixed-effect counts and finalization |
 | Lifecycle interruptions, commit alternatives, immutable evidence and useful repair | Virtual temporal laws plus the local 39-case SQLite bridge             |
 | Encoded payload, sparse trees, padded schema and noncanonical header controls      | `capacity_layout`                                                      |
-| Configured-full completion, executed SQL plans and main rollback framing           | `storage`                                                              |
+| Executed SQL plans/configuration and main rollback framing                         | Local `storage` checks                                                 |
+| Configured-full mixed-phase completion                                             | `qualify storage`                                                      |
 | Before-SQL, precommit, committed receipt and genuine hot rollback reopening        | Two-row `storage` process fixture                                      |
-| Actual admission, receipt-SQL and receipt-commit filesystem exhaustion             | Bounded Linux tmpfs lane                                               |
+| Actual admission, receipt-SQL and receipt-commit filesystem exhaustion             | `qualify storage` bounded Linux tmpfs                                  |
 
-The configured-full witness independently inserts 472 completed and 32 maximal pending records. It
-then executes production writes across authorized, attempted and observed phases in one fragmented
-16,384-page file. Raw row comparisons bind unchanged neighbours and original bytes through reopen.
-Insertion-order and acknowledgement-loss lifecycle matrices belong to neither this witness nor the
-page argument. A new record field needs local SQL/decoder and capacity-premise checks, not another
-full-capacity process world. A new effect reuses the application laws and aggregate capacity owner;
-its record/index bounds and actual write shapes still need validation.
+The configured-full witness runs only under `cargo xtask qualify storage`. It independently inserts
+472 completed and 32 maximal pending records. It then executes production writes across authorized,
+attempted and observed phases in one fragmented 16,384-page file. Raw row comparisons bind unchanged
+neighbours and original bytes through reopen. Insertion-order and acknowledgement-loss lifecycle
+matrices belong to neither this witness nor the page argument. A new record field needs local
+SQL/decoder and capacity-premise checks, not another full-capacity process world. A new effect
+reuses the application laws and aggregate capacity owner; its record/index bounds and actual write
+shapes still need validation.
 
 These are measured witnesses, not a universal allocation-peak proof. The retained and transient
 source arguments above remain necessary for all accepted layouts. No accepted encoding, history or

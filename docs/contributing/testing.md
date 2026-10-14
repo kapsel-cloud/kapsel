@@ -97,7 +97,8 @@ independently. A coordinated writer/reader replica swap must fail the SQL expect
 round trip matches. Shared SQL fixtures also supply format, capacity-layout, receipt-candidate and
 full-capacity records. Production writes own actual completion; independent row comparisons own
 unchanged authority, frozen facts and original bytes. One maximal mixed-phase completion witness
-replaces the insertion-order/phase lifecycle matrix. A two-row process fixture owns before-SQL,
+under `qualify storage` replaces the insertion-order/phase lifecycle matrix. Ordinary
+SQL/configuration/layout premises remain in `check core`. A two-row process fixture owns before-SQL,
 SQL-executed/precommit, hot rollback and committed-receipt observations. Competing-writer read
 views, rollback records and genuine ENOSPC remain separate physical owners.
 

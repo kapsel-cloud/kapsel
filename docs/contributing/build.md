@@ -87,7 +87,9 @@ these missing Linux obligations, supplied by Linux PR CI. Core/all explicitly ru
 `gateway::git::tests::real_git_` group with the resolved Git executable. Each selected target/group
 is listed with identical features and filters and must be nonempty. Runtime executable paths come
 from Cargo artifact messages, including configured target directories; the router does not guess
-paths beneath `target/debug`. No blanket ignored-test run can start ENOSPC or child fixtures.
+paths beneath `target/debug`. No blanket ignored-test run can start maximal completion, ENOSPC or
+child fixtures. `qualify storage` owns maximal completion and actual ENOSPC; ordinary
+SQL/configuration, layout and bounded receipt-process checks remain in core.
 
 A one-owner implementation change with unchanged shared contracts needs that area's check. Shared
 contracts, dependencies, gate wiring and uncertain scope need unscoped check. Prose-only changes
@@ -129,6 +131,7 @@ checks on unchanged inputs.
 | Changed guarantee                                            | Additional evidence                                                |
 | ------------------------------------------------------------ | ------------------------------------------------------------------ |
 | Qualification argument grammar, bookkeeping or report fields | Controller regressions and the Python static gate                  |
+| Storage launcher execution/mount/build/cleanup wiring        | `qualify storage` on the supported Linux container                 |
 | Artifact selection, transfer, custody or caller binding      | One affected selected-byte packaged witness                        |
 | Physical recovery, receiver behavior or timing premise       | Affected physical cases with their prerequisites                   |
 | Archive format or sidecars                                   | Offline verifier vectors                                           |

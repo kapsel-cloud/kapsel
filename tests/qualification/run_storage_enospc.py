@@ -1,327 +1,448 @@
 #!/usr/bin/env python3
-"""Run only the optional bounded SQLite ENOSPC fixture in a disposable Linux tmpfs."""
+"""Qualify maximal completion and actual ENOSPC with one cached Linux test executable."""
 
 from __future__ import annotations
 
-import io
+import argparse
+import contextlib
+import hashlib
+import json
 import os
 import re
-import select
-import stat
+import selectors
+import shlex
+import signal
 import subprocess
-import tarfile
+import sys
 import tempfile
 import time
+import tomllib
+import uuid
 from pathlib import Path
-from typing import NamedTuple
 
 IMAGE = "rust@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922"
-TEST = (
-    "gateway::tests::storage::genuine_enospc_during_admission_and_receipt_recovers_without_resend"
-)
-
-# The source snapshot is evidence, not an input transport. Current maintained checkouts are far below
-# these fixed caps; they bound hostile untracked files before allocation or archive copy while allowing
-# ordinary source additions to be preserved byte-for-byte.
-SOURCE_FILE_BYTE_LIMIT = 8 * 1024 * 1024
-SOURCE_TOTAL_BYTE_LIMIT = 64 * 1024 * 1024
-SOURCE_READ_CHUNK = 1024 * 1024
-
-# Git diff is the tracked-source evidence stream and can legitimately include binary patches. This
-# cap is intentionally larger than source snapshot caps while still bounding memory before appending.
-GIT_OUTPUT_BYTE_LIMIT = 128 * 1024 * 1024
-GIT_OUTPUT_READ_CHUNK = 1024 * 1024
-GIT_COMMAND_TIMEOUT_SECONDS = 30.0
+TARGET = "x86_64-unknown-linux-gnu"
+PREFIX = "gateway::tests::storage::"
+CASES = {
+    PREFIX + "full_identity_capacity_completes_maximal_mixed_phase_history": (
+        "KAPSEL_MAXIMAL_COMPLETION_PASSED",
+    ),
+    PREFIX + "genuine_enospc_during_admission_and_receipt_recovers_without_resend": (
+        "KAPSEL_ADMISSION_ENOSPC_PASSED",
+        "KAPSEL_RECEIPT_SQL_ENOSPC_PASSED",
+        "KAPSEL_RECEIPT_COMMIT_ENOSPC_PASSED",
+    ),
+}
+OUTPUT_LIMIT = 8 * 1024 * 1024
+CANCELLED: int | None = None
 
 
-class SourceFile(NamedTuple):
-    content: bytes
-    mode: int
+def check_interruption() -> None:
+    if CANCELLED is not None:
+        raise KeyboardInterrupt(f"storage qualification interrupted by signal {CANCELLED}")
 
 
-def bounded_command_output(command: list[str]) -> bytes:
-    deadline = time.monotonic() + GIT_COMMAND_TIMEOUT_SECONDS
-    process = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        close_fds=True,
-    )
-    if process.stdout is None:
-        process.kill()
-        process.wait()
-        raise RuntimeError("bounded command stdout pipe was not created")
-
-    chunks: list[bytes] = []
-    bytes_read = 0
-    failed = True
+def save_json(path: Path, value: object) -> None:
+    primary = sys.exception()
     try:
-        output_descriptor = process.stdout.fileno()
-        while True:
-            remaining_seconds = deadline - time.monotonic()
-            if remaining_seconds <= 0:
-                raise subprocess.TimeoutExpired(command, GIT_COMMAND_TIMEOUT_SECONDS)
-            readable, _, _ = select.select([output_descriptor], [], [], remaining_seconds)
-            if not readable:
-                raise subprocess.TimeoutExpired(command, GIT_COMMAND_TIMEOUT_SECONDS)
-            chunk = os.read(output_descriptor, GIT_OUTPUT_READ_CHUNK)
-            if not chunk:
-                break
-            if len(chunk) > GIT_OUTPUT_BYTE_LIMIT - bytes_read:
-                raise RuntimeError(
-                    f"command output exceeds {GIT_OUTPUT_BYTE_LIMIT} byte capture cap"
-                )
-            chunks.append(chunk)
-            bytes_read += len(chunk)
-
-        remaining_seconds = deadline - time.monotonic()
-        if remaining_seconds <= 0:
-            raise subprocess.TimeoutExpired(command, GIT_COMMAND_TIMEOUT_SECONDS)
-        return_code = process.wait(timeout=remaining_seconds)
-        output = b"".join(chunks)
-        if return_code:
-            raise subprocess.CalledProcessError(return_code, command, output=output)
-        failed = False
-        return output
-    finally:
-        process.stdout.close()
-        if failed and process.poll() is None:
-            process.kill()
-            process.wait()
+        path.write_text(json.dumps(value, indent=2) + "\n")
+    except BaseException as publication:
+        if primary is not None:
+            raise BaseExceptionGroup(
+                "execution and evidence publication failed", [primary, publication]
+            ) from None
+        raise
 
 
-def git(*arguments: str) -> bytes:
-    return bounded_command_output(["git", "--no-optional-locks", *arguments])
-
-
-def read_source_file(path: str, remaining_total_bytes: int) -> SourceFile:
-    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
-    if hasattr(os, "O_CLOEXEC"):
-        flags |= os.O_CLOEXEC
-
-    try:
-        descriptor = os.open(path, flags)
-    except OSError as error:
-        raise RuntimeError(f"untracked source {path!r} could not be opened safely") from error
-
-    try:
-        metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode):
-            raise RuntimeError(f"untracked source {path!r} is not a regular file")
-        if metadata.st_size > SOURCE_FILE_BYTE_LIMIT:
-            raise RuntimeError(
-                f"untracked source {path!r} exceeds {SOURCE_FILE_BYTE_LIMIT} byte file cap"
-            )
-        if metadata.st_size > remaining_total_bytes:
-            raise RuntimeError(
-                f"untracked sources exceed {SOURCE_TOTAL_BYTE_LIMIT} byte aggregate cap"
-            )
-
-        chunks: list[bytes] = []
-        bytes_read = 0
-        while True:
-            if bytes_read >= metadata.st_size:
-                chunk = os.read(descriptor, 1)
-                if chunk:
-                    raise RuntimeError(f"untracked source {path!r} grew during capture")
-                break
-            read_size = min(SOURCE_READ_CHUNK, metadata.st_size - bytes_read)
-            chunk = os.read(descriptor, read_size)
-            if not chunk:
-                break
-            bytes_read += len(chunk)
-            chunks.append(chunk)
-
-        final_metadata = os.fstat(descriptor)
-        if (
-            final_metadata.st_size != metadata.st_size
-            or bytes_read != metadata.st_size
-            or stat.S_IMODE(final_metadata.st_mode) != stat.S_IMODE(metadata.st_mode)
-        ):
-            raise RuntimeError(f"untracked source {path!r} changed during capture")
-        return SourceFile(b"".join(chunks), stat.S_IMODE(metadata.st_mode))
-    finally:
-        os.close(descriptor)
-
-
-def untracked_source_files() -> dict[str, SourceFile]:
-    paths = git("ls-files", "--others", "--exclude-standard", "-z").split(b"\0")
-    sources: dict[str, SourceFile] = {}
-    remaining_total_bytes = SOURCE_TOTAL_BYTE_LIMIT
-    for path_bytes in paths:
-        if not path_bytes:
-            continue
-        path = os.fsdecode(path_bytes)
-        source_file = read_source_file(path, remaining_total_bytes)
-        remaining_total_bytes -= len(source_file.content)
-        sources[path] = source_file
-    return sources
-
-
-def untracked_sources() -> dict[str, bytes]:
-    return {path: source_file.content for path, source_file in untracked_source_files().items()}
-
-
-def capture_source(evidence: Path) -> tuple[str, bytes, dict[str, SourceFile]]:
-    base = git("rev-parse", "HEAD").decode().strip()
-    source_diff = git("diff", "--binary", "--no-ext-diff", "--no-textconv", base, "--")
-    source_files = untracked_source_files()
-    (evidence / "base-revision.txt").write_text(base + "\n", encoding="utf-8")
-    (evidence / "source.diff").write_bytes(source_diff)
-    (evidence / "source-status.txt").write_bytes(git("status", "--porcelain=v1"))
-    with tarfile.open(evidence / "new-source.tar", "w") as archive:
-        for path, source_file in source_files.items():
-            entry = tarfile.TarInfo(path)
-            entry.size = len(source_file.content)
-            entry.mode = source_file.mode
-            archive.addfile(entry, io.BytesIO(source_file.content))
-    return base, source_diff, source_files
-
-
-def verify_source(snapshot: tuple[str, bytes, dict[str, SourceFile]]) -> None:
-    base, source_diff, sources = snapshot
-    tracked_source_changed = (
-        git("diff", "--binary", "--no-ext-diff", "--no-textconv", base, "--") != source_diff
-    )
-    if tracked_source_changed or untracked_source_files() != sources:
-        raise RuntimeError("source changed during read-only container gate")
-
-
-def cleanup_container(name: str, expected_owner: str) -> str:
-    owner = subprocess.run(
-        [
-            "docker",
-            "inspect",
-            "--format",
-            '{{.Id}}\t{{ index .Config.Labels "cloud.kapsel.storage-evidence" }}',
-            name,
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=30,
-        check=False,
-    )
-    if owner.returncode:
-        # A failed inspect is not evidence of absence. Require a successful full inventory.
-        inventory = subprocess.run(
-            ["docker", "container", "ls", "--all", "--format", "{{.Names}}"],
+def run(
+    command: list[str], log: Path | None, timeout: float = 30, *, interruptible: bool = True
+) -> bytes:
+    """Bound all commands, including EOF-before-exit, and retire the owned client group."""
+    if interruptible:
+        check_interruption()
+    deadline = time.monotonic() + timeout
+    output = bytearray()
+    with (
+        log.open("xb") if log is not None else contextlib.nullcontext() as retained,
+        subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=30,
-            check=False,
-        )
-        names = inventory.stdout.decode().splitlines()
-        if inventory.returncode or any(
-            not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", item) for item in names
-        ):
-            raise RuntimeError(
-                f"container cleanup unverified: inspect failed {owner.stderr!r}; "
-                f"inventory failed or invalid {inventory.stderr!r}"
-            )
-        if name in names:
-            raise RuntimeError(
-                f"container cleanup unverified: {name} exists but inspect failed {owner.stderr!r}"
-            )
-        return "Container absent in successful Docker inventory after failed inspection.\n"
-
-    fields = owner.stdout.decode().strip().split("\t")
-    if (
-        len(fields) != 2
-        or not re.fullmatch(r"[0-9a-f]{64}", fields[0])
-        or fields[1] != expected_owner
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        ) as child,
     ):
-        raise RuntimeError(f"container cleanup unverified: ownership/identity mismatch for {name}")
+        assert child.stdout is not None
+        selector = None
+        try:
+            selector = selectors.DefaultSelector()
+            selector.register(child.stdout, selectors.EVENT_READ)
+            while selector.get_map():
+                if interruptible:
+                    check_interruption()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, timeout)
+                for key, _ in selector.select(min(remaining, 0.1)):
+                    chunk = os.read(key.fd, min(65536, OUTPUT_LIMIT - len(output) + 1))
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    if len(output) + len(chunk) > OUTPUT_LIMIT:
+                        raise RuntimeError(f"command output exceeded {OUTPUT_LIMIT} bytes: {log}")
+                    if retained is not None:
+                        retained.write(chunk)
+                    output.extend(chunk)
+            while child.poll() is None:
+                if interruptible:
+                    check_interruption()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, timeout)
+                try:
+                    child.wait(timeout=min(remaining, 0.1))
+                except subprocess.TimeoutExpired:
+                    continue
+            code = child.returncode
+            if code:
+                raise RuntimeError(f"command failed ({code}): {shlex.join(command)}; see {log}")
+        finally:
+            # Reap an exited leader before signalling its group (macOS rejects zombie-only groups).
+            child.poll()
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except PermissionError:
+                # The leader can become a zombie between poll and killpg on macOS.
+                # Reap, then retry; a surviving unsignalable group remains a failure.
+                child.wait(timeout=10)
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            child.wait(timeout=10)
+            child.stdout.close()
+            if selector is not None:
+                selector.close()
+    return bytes(output)
 
-    # The name can be replaced after inspection; remove only the verified immutable ID.
-    removed = subprocess.run(
-        ["docker", "rm", "--force", fields[0]],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=30,
-        check=False,
+
+class Commands:
+    """Retain bounded logs and literal commands with elapsed time, including failures."""
+
+    def __init__(self, evidence: Path) -> None:
+        self.evidence = evidence
+        self.records: list[dict[str, object]] = []
+        self.publication_errors: list[BaseException] = []
+
+    def execute(
+        self, command: list[str], timeout: float = 30, *, retirement: bool = False
+    ) -> bytes:
+        log = self.evidence / f"command-{len(self.records):02}.log"
+        record: dict[str, object] = {"command": command, "log": log.name, "outcome": "FAILED"}
+        self.records.append(record)
+        started = time.monotonic()
+        try:
+            # Retirement must remain possible after cancellation or evidence storage failure.
+            output = run(
+                command, None if retirement else log, timeout, interruptible=not retirement
+            )
+            record["outcome"] = "COMPLETED"
+            if retirement:
+                try:
+                    log.write_bytes(output)
+                except OSError as publication:
+                    self.publication_errors.append(publication)
+            return output
+        finally:
+            record["seconds"] = time.monotonic() - started
+            if retirement:
+                try:
+                    save_json(self.evidence / "commands.json", self.records)
+                except BaseException as publication:
+                    self.publication_errors.append(publication)
+            else:
+                save_json(self.evidence / "commands.json", self.records)
+
+    def require_evidence(self) -> None:
+        if self.publication_errors:
+            raise BaseExceptionGroup(
+                "retirement evidence publication failed", self.publication_errors
+            )
+
+
+def cleanup_container(name: str, owner: str, commands: Commands) -> str:
+    identity = (
+        commands.execute(
+            [
+                "docker",
+                "inspect",
+                "--format",
+                '{{.Id}}\t{{ index .Config.Labels "cloud.kapsel.storage-evidence" }}',
+                name,
+            ],
+            retirement=True,
+        )
+        .decode()
+        .strip()
+        .split("\t")
     )
-    if removed.returncode:
-        raise RuntimeError(f"owned container cleanup failed: {removed.stderr!r}")
-    return f"Removed verified owned container {fields[0]}.\n"
+    if len(identity) != 2 or not re.fullmatch(r"[0-9a-f]{64}", identity[0]) or identity[1] != owner:
+        raise RuntimeError("container cleanup unverified: ownership/identity mismatch")
+    # Names can be replaced after inspection. Never remove by name or an unverified create result.
+    commands.execute(["docker", "rm", "--force", identity[0]], retirement=True)
+    inventory = commands.execute(
+        ["docker", "container", "ls", "--all", "--no-trunc", "--quiet"], retirement=True
+    )
+    ids = inventory.decode().splitlines()
+    if any(not re.fullmatch(r"[0-9a-f]{64}", item) for item in ids) or identity[0] in ids:
+        raise RuntimeError("container cleanup unverified: removed ID remains or invalid inventory")
+    commands.require_evidence()
+    return identity[0]
 
 
-def main() -> None:
-    root = Path(__file__).resolve().parents[2]
-    os.chdir(root)
-    evidence = Path(tempfile.mkdtemp(prefix="kapsel-storage-enospc-"))
-    name = f"kapsel-storage-{evidence.name.rsplit('-', 1)[-1]}"
-    snapshot = capture_source(evidence)
-    command = [
+def container_command(root: Path, cache: Path, name: str, owner: str) -> list[str]:
+    return [
         "docker",
-        "run",
+        "create",
         "--name",
         name,
         "--platform",
         "linux/amd64",
         "--label",
-        f"cloud.kapsel.storage-evidence={evidence.name}",
+        f"cloud.kapsel.storage-evidence={owner}",
         "--memory=2g",
         "--memory-swap=2g",
         "--cpus=2",
         "--pids-limit=256",
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges",
+        "--read-only",
+        "--log-driver=local",
+        "--log-opt=max-size=8m",
+        "--log-opt=max-file=2",
         "--user",
         f"{os.getuid()}:{os.getgid()}",
         "--mount",
         f"type=bind,src={root},dst=/workspace,readonly",
+        "--mount",
+        f"type=bind,src={cache},dst=/cache",
         "--tmpfs",
-        f"/kapsel-enospc:rw,nosuid,nodev,noexec,size=100663296,mode=0700,"
+        "/tmp:rw,nosuid,nodev,noexec,size=67108864,mode=1777",
+        "--tmpfs",
+        "/kapsel-enospc:rw,nosuid,nodev,noexec,size=100663296,mode=0700,"
         f"uid={os.getuid()},gid={os.getgid()}",
         "--workdir",
         "/workspace",
         "--env",
-        "CARGO_HOME=/tmp/kapsel-cargo",
+        "CARGO_HOME=/cache/cargo",
         "--env",
-        "CARGO_TARGET_DIR=/tmp/kapsel-target",
+        "CARGO_TARGET_DIR=/cache/target",
         "--env",
         "CARGO_BUILD_JOBS=2",
         "--env",
+        "RUSTUP_TOOLCHAIN=1.98.0",
+        "--env",
         "KAPSEL_ENOSPC_FIXTURE=dedicated-tmpfs-v1",
         IMAGE,
-        "bash",
-        "-euc",
-        f"rustc --version; uname -a; cargo test --locked -p kapsel --lib {TEST} "
-        "-- --ignored --exact --nocapture --test-threads=1",
+        "sleep",
+        "1800",
     ]
-    (evidence / "command.txt").write_text(repr(command) + "\n", encoding="utf-8")
-    print(f"Storage ENOSPC evidence: {evidence}", flush=True)
-    try:
-        with (evidence / "enospc.log").open("wb") as log:
-            result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=1800)
-        if result.returncode:
-            raise SystemExit(f"ENOSPC fixture failed ({result.returncode}); see {evidence}")
 
-        output = (evidence / "enospc.log").read_bytes()
+
+def select_executable(output: bytes) -> tuple[str, dict[str, int]]:
+    executables: list[str] = []
+    counts = {"fresh": 0, "compiled": 0}
+    for line in output.splitlines():
+        # Cargo's progress diagnostics share the retained log, but artifacts are JSON objects.
+        if not line.startswith(b"{"):
+            continue
+        record = json.loads(line)
+        if record.get("reason") != "compiler-artifact":
+            continue
+        counts["fresh" if record["fresh"] else "compiled"] += 1
         if (
-            b"KAPSEL_ADMISSION_ENOSPC_PASSED" not in output
-            or (b"KAPSEL_REAL_ENOSPC_CASES_PASSED" not in output)
-            or (b"test result: ok. 1 passed; 0 failed; 0 ignored" not in output)
+            record.get("target", {}).get("name") == "kapsel"
+            and record.get("profile", {}).get("test") is True
+            and record.get("target", {}).get("kind") == ["lib"]
+            and isinstance(record.get("executable"), str)
         ):
-            raise SystemExit("expected ENOSPC test did not execute both cases")
-        verify_source(snapshot)
-    except BaseException as run_error:
-        try:
-            (evidence / "cleanup.txt").write_text(
-                cleanup_container(name, evidence.name), encoding="utf-8"
+            executables.append(record["executable"])
+    if len(executables) != 1 or not executables[0].startswith(
+        f"/cache/target/{TARGET}/debug/deps/"
+    ):
+        raise RuntimeError(
+            "Cargo did not identify exactly one compatible kapsel libtest executable"
+        )
+    return executables[0], counts
+
+
+def require_selection(output: bytes, case: str) -> None:
+    if output.decode().splitlines() != [f"{case}: test", "", "1 test, 0 benchmarks"]:
+        raise RuntimeError(f"nonempty exact selection not established: {case}")
+
+
+def require_completion(output: bytes, case: str) -> None:
+    lines = output.decode().splitlines()
+    for marker in CASES[case]:
+        if lines.count(marker) != 1:
+            raise RuntimeError(f"missing or duplicated phase marker: {marker}")
+    if not any(
+        line.startswith("test result: ok. 1 passed; 0 failed; 0 ignored;") for line in lines
+    ):
+        raise RuntimeError(f"one executed passing test not established: {case}")
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def qualify(root: Path, cache: Path, evidence: Path, prepare_only: bool) -> None:
+    started = time.monotonic()
+    commands = Commands(evidence)
+    owner = uuid.uuid4().hex
+    name = f"kapsel-storage-{owner}"
+    source = {
+        "revision": commands.execute(["git", "-C", str(root), "rev-parse", "HEAD"])
+        .decode()
+        .strip(),
+        "tree": commands.execute(["git", "-C", str(root), "rev-parse", "HEAD^{tree}"])
+        .decode()
+        .strip(),
+        "dirty": bool(commands.execute(["git", "-C", str(root), "status", "--porcelain=v1"])),
+    }
+    report: dict[str, object] = {
+        "source": source,
+        "runner_sha256": sha256(Path(__file__)),
+        "image": IMAGE,
+        "target": TARGET,
+        "build_cache": str(cache),
+        "cases": list(CASES),
+        "outcome": "INCOMPLETE",
+    }
+    save_json(evidence / "result.json", report)
+    # Once creation is submitted, even timeout/interruption must resolve ownership before cleanup.
+    try:
+        created = commands.execute(container_command(root, cache, name, owner), timeout=120)
+        container_id = created.decode().strip()
+        if not re.fullmatch(r"[0-9a-f]{64}", container_id):
+            raise RuntimeError("invalid container creation identity")
+        commands.execute(["docker", "start", container_id])
+        execute = ["docker", "exec", container_id]
+        report["installed_toolchains"] = commands.execute(
+            [*execute, "rustup", "toolchain", "list"]
+        ).decode()
+        rustc = commands.execute([*execute, "rustc", "-vV"]).decode()
+        toolchain = tomllib.loads((root / "rust-toolchain.toml").read_text())["toolchain"][
+            "channel"
+        ]
+        if f"release: {toolchain}\n" not in rustc or f"host: {TARGET}\n" not in rustc:
+            raise RuntimeError(
+                "pinned container/toolchain is incompatible with the selected source"
             )
-        except BaseException as cleanup_error:
+        report["rustc"] = rustc
+        report["environment"] = commands.execute([*execute, "uname", "-a"]).decode().strip()
+        report["setup_seconds"] = time.monotonic() - started
+
+        build_started = time.monotonic()
+        output = commands.execute(
+            [
+                *execute,
+                "cargo",
+                "test",
+                "--locked",
+                "-p",
+                "kapsel",
+                "--lib",
+                "--no-run",
+                "--target",
+                TARGET,
+                "--message-format=json",
+            ],
+            timeout=1200,
+        )
+        executable, artifacts = select_executable(output)
+        report["build_seconds"] = time.monotonic() - build_started
+        report["cargo_artifacts"] = artifacts
+        report["executable"] = executable
+        executable_digest = (
+            commands.execute([*execute, "sha256sum", executable]).decode().split()[0]
+        )
+        if not re.fullmatch(r"[0-9a-f]{64}", executable_digest):
+            raise RuntimeError("invalid test executable SHA256")
+        report["executable_sha256"] = executable_digest
+
+        execution_started = time.monotonic()
+        executed: list[str] = []
+        for case in CASES:
+            selected = [*execute, executable, case, "--ignored", "--exact"]
+            require_selection(commands.execute([*selected, "--list"]), case)
+            if not prepare_only:
+                require_completion(
+                    commands.execute([*selected, "--nocapture", "--test-threads=1"], timeout=300),
+                    case,
+                )
+                executed.append(case)
+        report["executed_cases"] = executed
+        report["execution_seconds"] = time.monotonic() - execution_started
+        if (
+            commands.execute([*execute, "sha256sum", executable]).decode().split()[0]
+            != executable_digest
+        ):
+            raise RuntimeError("test executable changed during qualification")
+    except BaseException as primary:
+        try:
+            report["removed_container_id"] = cleanup_container(name, owner, commands)
+        except BaseException as cleanup:
             raise BaseExceptionGroup(
-                "ENOSPC run failed and container cleanup is unverified",
-                [run_error, cleanup_error],
+                "storage run failed and cleanup is unverified", [primary, cleanup]
             ) from None
         raise
     else:
-        (evidence / "cleanup.txt").write_text(
-            cleanup_container(name, evidence.name), encoding="utf-8"
-        )
-    (evidence / "result.txt").write_text("KAPSEL_STORAGE_ENOSPC_PASSED\n", encoding="utf-8")
-    print("KAPSEL_STORAGE_ENOSPC_PASSED", flush=True)
+        report["removed_container_id"] = cleanup_container(name, owner, commands)
+        check_interruption()
+        report["outcome"] = "PREPARED" if prepare_only else "QUALIFIED"
+    finally:
+        report["total_seconds"] = time.monotonic() - started
+        save_json(evidence / "result.json", report)
+
+
+def interrupted(signum: int, _frame: object) -> None:
+    # Defer exceptions until the child is registered. Cleanup commands ignore cancellation,
+    # but qualification checks it before selecting a terminal result. SIGKILL leaves INCOMPLETE.
+    global CANCELLED
+    CANCELLED = signum
+
+
+def main() -> None:
+    signal.signal(signal.SIGTERM, interrupted)
+    signal.signal(signal.SIGINT, interrupted)
+    root = Path(__file__).resolve().parents[2]
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--build-cache", type=Path, default=root / "target/storage-linux-amd64")
+    parser.add_argument("--output", type=Path, help="new evidence directory")
+    parser.add_argument(
+        "--prepare-only", action="store_true", help="build/list only; never qualification"
+    )
+    arguments = parser.parse_args()
+    cache = arguments.build_cache.resolve()
+    cache.mkdir(parents=True, exist_ok=True)
+    evidence = arguments.output
+    if evidence is None:
+        evidence = Path(tempfile.mkdtemp(prefix="kapsel-storage-"))
+    else:
+        evidence.mkdir(parents=True, exist_ok=False)
+    print(f"Storage evidence: {evidence.resolve()}", flush=True)
+    qualify(root, cache, evidence.resolve(), arguments.prepare_only)
+    print(
+        "KAPSEL_STORAGE_PREPARED" if arguments.prepare_only else "KAPSEL_STORAGE_QUALIFIED",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

@@ -289,9 +289,10 @@ Seeded lifecycle exploration uses two to four identities per virtual atomic-reco
 explores interleaved selections, receiver changes, interruption windows, authority/material
 withdrawal, and reopening. Each event checks every identity's durable facts, independent receiver
 counts, and original evidence. It never prunes or resets attempted work to bypass capacity. Separate
-storage tests check full-capacity behaviour. The same explicit trace format supports generated
-schedules, compact interruption inputs, minimized findings, and direct replay. Wall-clock duration
-changes case count, not case semantics.
+`qualify storage` checks maximal full-capacity completion and three real ENOSPC placements. Local
+core checks retain SQL/configuration/layout and bounded receipt-process premises. The same explicit
+trace format supports generated schedules, compact interruption inputs, minimized findings, and
+direct replay. Wall-clock duration changes case count, not case semantics.
 
 ### Live Kubernetes and demonstration
 

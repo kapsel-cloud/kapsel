@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
-"""Regress ENOSPC source evidence and cleanup without Docker or this checkout's index."""
+"""Regress exact selection, phase evidence, bounded execution and immutable-ID cleanup offline."""
 
 from __future__ import annotations
 
-import contextlib
-import io
+import json
 import os
 import subprocess
-import sys
-import tarfile
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -18,424 +16,321 @@ import run_storage_enospc as RUNNER
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTAINER_ID = "a" * 64
+EXECUTABLE = f"/cache/target/{RUNNER.TARGET}/debug/deps/kapsel-fixture"
 
 
-class SourceEvidenceTests(unittest.TestCase):
-    def setUp(self) -> None:
-        temporary = tempfile.TemporaryDirectory(prefix="kapsel-storage-runner-test-")
-        self.addCleanup(temporary.cleanup)
-        self.temporary = Path(temporary.name)
-        self.root = self.temporary / "repo"
-        self.root.mkdir()
-        # Never let a hook's alternate Git index/worktree redirect fixture writes to this checkout.
-        environment = {
-            key: value for key, value in os.environ.items() if not key.startswith("GIT_")
-        }
-        environment.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
-        isolated_git = mock.patch.dict(os.environ, environment, clear=True)
-        isolated_git.start()
-        self.addCleanup(isolated_git.stop)
-        previous = Path.cwd()
-        os.chdir(self.root)
-        self.addCleanup(os.chdir, previous)
-        self.git("init", "-q")
-        for name in ("staged.txt", "unstaged.txt", "both.txt", "deleted.txt"):
-            (self.root / name).write_text("original\n")
-        self.git("add", ".")
-        self.commit("base")
-        self.evidence = self.temporary / "evidence"
-        self.evidence.mkdir()
+def artifact_output(fresh: bool = True) -> bytes:
+    return (
+        json.dumps(
+            {
+                "reason": "compiler-artifact",
+                "target": {"name": "kapsel", "kind": ["lib"]},
+                "profile": {"test": True},
+                "fresh": fresh,
+                "executable": EXECUTABLE,
+            }
+        ).encode()
+        + b"\n"
+    )
 
-    def git(self, *arguments: str) -> bytes:
-        return subprocess.check_output(["git", *arguments], cwd=self.root, timeout=10)
 
-    def commit(self, message: str, *arguments: str) -> None:
-        self.git(
-            "-c",
-            "user.name=Storage fixture",
-            "-c",
-            "user.email=fixture@example.invalid",
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--no-gpg-sign",
-            "-qm",
-            message,
-            *arguments,
+def listing(case: str) -> bytes:
+    return f"{case}: test\n\n1 test, 0 benchmarks\n".encode()
+
+
+def completion(case: str) -> bytes:
+    return (
+        "\n".join(RUNNER.CASES[case])
+        + "\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured;\n"
+    ).encode()
+
+
+class SelectionTests(unittest.TestCase):
+    def test_cargo_selects_one_exact_linux_executable_and_records_cache_reuse(self) -> None:
+        for fresh in (False, True):
+            executable, counts = RUNNER.select_executable(
+                b"Finished test profile\n" + artifact_output(fresh)
+            )
+            self.assertEqual(executable, EXECUTABLE)
+            self.assertEqual(counts, {"fresh": int(fresh), "compiled": int(not fresh)})
+        for output in (
+            b"",
+            artifact_output() * 2,
+            artifact_output().replace(b"/cache/target", b"/foreign"),
+        ):
+            with self.subTest(output=output), self.assertRaises(RuntimeError):
+                RUNNER.select_executable(output)
+
+    def test_every_exact_case_requires_nonzero_selection_and_every_phase_marker(self) -> None:
+        for case in RUNNER.CASES:
+            RUNNER.require_selection(listing(case), case)
+            RUNNER.require_completion(completion(case), case)
+            for bad in (
+                b"\n0 tests, 0 benchmarks\n",
+                listing(case).replace(b"1 test", b"2 tests"),
+                listing("wrong"),
+            ):
+                with self.subTest(case=case, bad=bad), self.assertRaises(RuntimeError):
+                    RUNNER.require_selection(bad, case)
+            for marker in RUNNER.CASES[case]:
+                for bad in (
+                    completion(case).replace(marker.encode(), b""),
+                    completion(case) + marker.encode() + b"\n",
+                ):
+                    with self.subTest(case=case, marker=marker), self.assertRaises(RuntimeError):
+                        RUNNER.require_completion(bad, case)
+            with self.assertRaises(RuntimeError):
+                RUNNER.require_completion(completion(case).replace(b"1 passed", b"0 passed"), case)
+
+    def test_container_bounds_and_readonly_source_are_explicit(self) -> None:
+        command = RUNNER.container_command(ROOT, Path("/cache-on-host"), "name", "owner")
+        for value in (
+            "--memory=2g",
+            "--memory-swap=2g",
+            "--cpus=2",
+            "--pids-limit=256",
+            "--read-only",
+            "--cap-drop=ALL",
+            "--security-opt=no-new-privileges",
+            "linux/amd64",
+            "type=bind,src=/cache-on-host,dst=/cache",
+            f"type=bind,src={ROOT},dst=/workspace,readonly",
+        ):
+            self.assertIn(value, command)
+        self.assertIn(
+            "size=100663296", command[command.index("--tmpfs", command.index("--tmpfs") + 1) + 1]
         )
+        self.assertEqual(command[command.index("--user") + 1], f"{os.getuid()}:{os.getgid()}")
+        self.assertEqual(command[-3:], [RUNNER.IMAGE, "sleep", "1800"])
 
-    def test_staged_unstaged_new_deleted_and_untracked_reconstruct_without_index_changes(
+
+class CommandTests(unittest.TestCase):
+    def test_real_exit_timeout_eof_and_output_ceiling_never_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.assertEqual(RUNNER.run(["sh", "-c", "printf exact"], directory / "ok"), b"exact")
+            for name, program, exception in (
+                ("exit", "printf primary; exit 7", RuntimeError),
+                ("timeout", "sleep 3", subprocess.TimeoutExpired),
+                ("eof", "exec 1>&- 2>&-; sleep 3", subprocess.TimeoutExpired),
+            ):
+                with self.subTest(name=name), self.assertRaises(exception):
+                    RUNNER.run(["sh", "-c", program], directory / name, timeout=0.1)
+            self.assertEqual((directory / "exit").read_bytes(), b"primary")
+            with (
+                mock.patch.object(RUNNER, "OUTPUT_LIMIT", 4),
+                self.assertRaisesRegex(RuntimeError, "output exceeded"),
+            ):
+                RUNNER.run(["sh", "-c", "printf 12345"], directory / "overflow")
+            self.assertLessEqual((directory / "overflow").stat().st_size, 4)
+
+    def test_registration_interruption_retires_child_and_cancellation_defers_until_registered(
         self,
     ) -> None:
-        (self.root / "staged.txt").write_text("staged change\n")
-        (self.root / "new.bin").write_bytes(b"\0staged new\xff")
-        (self.root / "both.txt").write_text("staged intermediate\n")
-        self.git("add", "staged.txt", "new.bin", "both.txt")
-        (self.root / "both.txt").write_text("working-tree final\n")
-        self.git("rm", "-q", "deleted.txt")
-        (self.root / "unstaged.txt").write_text("unstaged change\n")
-        (self.root / "loose.txt").write_text("untracked\n")
-        (self.root / "loose.txt").chmod(0o644)
-        index = (self.root / ".git/index").read_bytes()
-        snapshot = RUNNER.capture_source(self.evidence)
-        RUNNER.verify_source(snapshot)
-        self.assertEqual((self.root / ".git/index").read_bytes(), index)
-        self.assertEqual(snapshot[2], {"loose.txt": RUNNER.SourceFile(b"untracked\n", 0o644)})
-        reconstructed = self.temporary / "reconstructed"
-        reconstructed.mkdir()
-        with tarfile.open(fileobj=io.BytesIO(self.git("archive", snapshot[0]))) as archive:
-            for member in archive.getmembers():
-                if member.isfile():
-                    (reconstructed / member.name).write_bytes(archive.extractfile(member).read())
-        subprocess.run(
-            ["git", "apply", str(self.evidence / "source.diff")],
-            cwd=reconstructed,
-            timeout=10,
-            check=True,
-        )
-        with tarfile.open(self.evidence / "new-source.tar") as archive:
-            for member in archive.getmembers():
-                (reconstructed / member.name).write_bytes(archive.extractfile(member).read())
-        expected = {p.name: p.read_bytes() for p in self.root.iterdir() if p.is_file()}
-        self.assertEqual({p.name: p.read_bytes() for p in reconstructed.iterdir()}, expected)
-        self.assertEqual((self.root / ".git/index").read_bytes(), index)
-
-    def test_executable_untracked_archive_preserves_retained_content_and_mode(self) -> None:
-        executable = self.root / "tool.sh"
-        executable.write_text("#!/bin/sh\necho captured\n")
-        executable.chmod(0o755)
-
-        snapshot = RUNNER.capture_source(self.evidence)
-
-        self.assertEqual(
-            snapshot[2], {"tool.sh": RUNNER.SourceFile(b"#!/bin/sh\necho captured\n", 0o755)}
-        )
-        with tarfile.open(self.evidence / "new-source.tar") as archive:
-            member = archive.getmember("tool.sh")
-            self.assertEqual(member.mode, 0o755)
-            extracted = archive.extractfile(member)
-            self.assertIsNotNone(extracted)
-            self.assertEqual(extracted.read(), b"#!/bin/sh\necho captured\n")
-
-    def test_untracked_archive_uses_retained_bytes_after_path_changes(self) -> None:
-        original = self.root / "loose.txt"
-        original.write_bytes(b"captured bytes\n")
-        original.chmod(0o644)
-        read_sources = RUNNER.untracked_source_files
-
-        def replace_path_after_capture() -> dict[str, RUNNER.SourceFile]:
-            sources = read_sources()
-            original.unlink()
-            os.symlink("private-target", original)
-            return sources
-
-        with mock.patch.object(
-            RUNNER, "untracked_source_files", side_effect=replace_path_after_capture
-        ):
-            snapshot = RUNNER.capture_source(self.evidence)
-
-        self.assertEqual(snapshot[2], {"loose.txt": RUNNER.SourceFile(b"captured bytes\n", 0o644)})
-        with tarfile.open(self.evidence / "new-source.tar") as archive:
-            member = archive.getmember("loose.txt")
-            extracted = archive.extractfile(member)
-            self.assertIsNotNone(extracted)
-            self.assertEqual(extracted.read(), b"captured bytes\n")
-            self.assertEqual(member.mode, 0o644)
-
-    def test_verification_rejects_a_mode_only_change_to_untracked_source(self) -> None:
-        source = self.root / "tool.sh"
-        source.write_bytes(b"#!/bin/sh\nexit 0\n")
-        source.chmod(0o644)
-        snapshot = RUNNER.capture_source(self.evidence)
-        source.chmod(0o755)
-        with self.assertRaisesRegex(RuntimeError, "source changed"):
-            RUNNER.verify_source(snapshot)
-
-    def test_verification_detects_staged_edits_and_untracked_inventory_and_bytes(self) -> None:
-        (self.root / "loose.txt").write_text("first\n")
-        for change in ("staged", "untracked-bytes", "untracked-added", "untracked-removed"):
-            with self.subTest(change=change):
-                snapshot = RUNNER.capture_source(self.evidence)
-                if change == "staged":
-                    (self.root / "staged.txt").write_text("changed during run\n")
-                    self.git("add", "staged.txt")
-                elif change == "untracked-bytes":
-                    (self.root / "loose.txt").write_text("second\n")
-                elif change == "untracked-added":
-                    (self.root / "new-loose.txt").write_text("new\n")
-                else:
-                    (self.root / "new-loose.txt").unlink()
-                with self.assertRaisesRegex(RuntimeError, "source changed"):
-                    RUNNER.verify_source(snapshot)
-
-    def test_untracked_source_snapshot_rejects_non_regular_paths(self) -> None:
-        (self.root / "target.txt").write_text("private target\n")
-        os.symlink("target.txt", self.root / "symlink.txt")
-        (self.root / "directory").mkdir()
-        fifo = self.root / "fifo"
-        os.mkfifo(fifo)
-
-        cases = {
-            "symlink.txt": "could not be opened safely",
-            "directory": "not a regular file",
-            "fifo": "not a regular file",
-        }
-        for path, message in cases.items():
-            with self.subTest(path=path):
-                with self.assertRaisesRegex(RuntimeError, message):
-                    RUNNER.read_source_file(path, RUNNER.SOURCE_TOTAL_BYTE_LIMIT)
-
-    def test_untracked_source_snapshot_bounds_file_and_aggregate_bytes(self) -> None:
-        (self.root / "large.txt").write_bytes(b"abcde")
-        with mock.patch.object(RUNNER, "SOURCE_FILE_BYTE_LIMIT", 4):
-            with self.assertRaisesRegex(RuntimeError, "file cap"):
-                RUNNER.untracked_sources()
-
-        (self.root / "large.txt").unlink()
-        (self.root / "first.txt").write_bytes(b"1234")
-        (self.root / "second.txt").write_bytes(b"5678")
-        with (
-            mock.patch.object(RUNNER, "SOURCE_FILE_BYTE_LIMIT", 10),
-            mock.patch.object(RUNNER, "SOURCE_TOTAL_BYTE_LIMIT", 6),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "aggregate cap"):
-                RUNNER.untracked_sources()
-
-    def test_untracked_source_snapshot_detects_growth_over_initial_size(self) -> None:
-        (self.root / "loose.txt").write_bytes(b"a")
-        real_read = RUNNER.os.read
-
-        def growing_read(descriptor: int, size: int) -> bytes:
-            chunk = real_read(descriptor, size)
-            if chunk == b"a":
-                with (self.root / "loose.txt").open("ab") as source:
-                    source.write(b"b")
-            return chunk
-
-        with mock.patch.object(RUNNER.os, "read", side_effect=growing_read):
-            with self.assertRaisesRegex(RuntimeError, "grew during capture"):
-                RUNNER.untracked_sources()
-
-    def test_head_is_captured_once_and_comparison_uses_that_exact_base(self) -> None:
-        with mock.patch.object(RUNNER, "git", wraps=RUNNER.git) as commands:
-            snapshot = RUNNER.capture_source(self.evidence)
-            self.commit("later fixture head", "--allow-empty")
-            self.assertNotEqual(self.git("rev-parse", "HEAD").decode().strip(), snapshot[0])
-            RUNNER.verify_source(snapshot)
-        self.assertEqual(
-            sum(call.args == ("rev-parse", "HEAD") for call in commands.call_args_list), 1
-        )
-        diffs = [call.args for call in commands.call_args_list if call.args[0] == "diff"]
-        self.assertEqual(len(diffs), 2)
-        self.assertTrue(all(args[-2:] == (snapshot[0], "--") for args in diffs))
-
-
-class GitCaptureTests(unittest.TestCase):
-    def test_bounded_command_output_returns_exact_bytes(self) -> None:
-        output = RUNNER.bounded_command_output(
-            [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'exact\\x00bytes')"]
-        )
-
-        self.assertEqual(output, b"exact\x00bytes")
-
-    def test_bounded_command_output_rejects_overflow_before_appending(self) -> None:
-        with mock.patch.object(RUNNER, "GIT_OUTPUT_BYTE_LIMIT", 4):
-            with self.assertRaisesRegex(RuntimeError, "capture cap"):
-                RUNNER.bounded_command_output(
-                    [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'12345')"]
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "log"
+            started = time.monotonic()
+            with mock.patch.object(
+                RUNNER.selectors.DefaultSelector,
+                "register",
+                side_effect=KeyboardInterrupt("registration"),
+            ):
+                with self.assertRaises(KeyboardInterrupt):
+                    RUNNER.run(["sh", "-c", "sleep 30"], log)
+            self.assertLess(time.monotonic() - started, 2)
+            with mock.patch.object(RUNNER, "CANCELLED", None):
+                RUNNER.interrupted(15, None)
+                with self.assertRaises(KeyboardInterrupt):
+                    RUNNER.run(["sh", "-c", "printf forbidden"], Path(temporary) / "cancelled")
+                self.assertEqual(
+                    RUNNER.run(["sh", "-c", "printf cleanup"], None, interruptible=False),
+                    b"cleanup",
                 )
 
-    def test_bounded_command_output_times_out_after_stdout_eof_until_wait(self) -> None:
-        program = "import os, time; os.close(1); time.sleep(2)"
-        with mock.patch.object(RUNNER, "GIT_COMMAND_TIMEOUT_SECONDS", 0.2):
+    def test_publication_failure_retains_primary_exception(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            commands = RUNNER.Commands(Path(temporary))
+            with mock.patch.object(Path, "write_text", side_effect=OSError("evidence full")):
+                with self.assertRaises(BaseExceptionGroup) as caught:
+                    commands.execute(["sh", "-c", "exit 7"])
+            self.assertIn("command failed (7)", str(caught.exception.exceptions[0]))
+            self.assertIn("evidence full", str(caught.exception.exceptions[1]))
+
+    def test_timeout_retires_client_descendants(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            marker = Path(temporary) / "late-write"
             with self.assertRaises(subprocess.TimeoutExpired):
-                RUNNER.bounded_command_output([sys.executable, "-c", program])
+                RUNNER.run(
+                    ["sh", "-c", '(sleep 1; touch "$1") & wait', "fixture", str(marker)],
+                    Path(temporary) / "log",
+                    timeout=0.1,
+                )
+            time.sleep(1.1)
+            self.assertFalse(marker.exists())
 
 
 class CleanupTests(unittest.TestCase):
-    @staticmethod
-    def result(
-        code: int = 0, output: bytes = b"", error: bytes = b""
-    ) -> subprocess.CompletedProcess:
-        return subprocess.CompletedProcess([], code, output, error)
+    def test_verified_cleanup_removes_only_immutable_id_and_checks_retirement(self) -> None:
+        commands = mock.Mock()
+        commands.execute.side_effect = [f"{CONTAINER_ID}\towner\n".encode(), b"removed\n", b""]
+        self.assertEqual(RUNNER.cleanup_container("name", "owner", commands), CONTAINER_ID)
+        self.assertEqual(
+            commands.execute.call_args_list[1].args[0], ["docker", "rm", "--force", CONTAINER_ID]
+        )
 
-    def test_verified_owner_is_removed_by_immutable_id(self) -> None:
-        with mock.patch.object(
-            RUNNER.subprocess,
-            "run",
-            side_effect=[
-                self.result(output=f"{CONTAINER_ID}\towner\n".encode()),
-                self.result(),
-            ],
-        ) as calls:
-            self.assertIn("Removed verified owned", RUNNER.cleanup_container("name", "owner"))
-        self.assertEqual(calls.call_args_list[1].args[0], ["docker", "rm", "--force", CONTAINER_ID])
-
-    def test_inspect_failure_requires_successful_inventory_proof_of_absence(self) -> None:
-        with mock.patch.object(
-            RUNNER.subprocess,
-            "run",
-            side_effect=[
-                self.result(1, error=b"inspect unavailable"),
-                self.result(output=b"unrelated\n"),
-            ],
-        ) as calls:
-            self.assertIn(
-                "absent in successful Docker inventory", RUNNER.cleanup_container("name", "owner")
-            )
-        self.assertFalse(any(call.args[0][1] == "rm" for call in calls.call_args_list))
-
-    def test_inspect_inventory_and_ownership_failures_never_remove_unverified_container(
-        self,
-    ) -> None:
-        cases = [
-            [self.result(1), self.result(1, error=b"daemon unavailable")],
-            [self.result(1), self.result(output=b"name\n")],
-            [self.result(1), self.result(output=b"invalid inventory output\n")],
-            [self.result(output=f"{CONTAINER_ID}\twrong-owner\n".encode())],
-            [self.result(output=b"malformed identity\towner\n")],
-            [subprocess.TimeoutExpired("docker inspect", 30)],
-            [OSError("docker unavailable")],
-        ]
-        for responses in cases:
+    def test_full_evidence_filesystem_cannot_prevent_verified_removal(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            commands = RUNNER.Commands(Path(temporary))
             with (
-                self.subTest(responses=responses),
-                mock.patch.object(RUNNER.subprocess, "run", side_effect=responses) as calls,
-            ):
-                with self.assertRaises((RuntimeError, subprocess.TimeoutExpired, OSError)):
-                    RUNNER.cleanup_container("name", "owner")
-                self.assertFalse(any(call.args[0][1] == "rm" for call in calls.call_args_list))
-
-    def test_verified_removal_failure_is_explicit(self) -> None:
-        for failure in (
-            self.result(1, error=b"remove refused"),
-            subprocess.TimeoutExpired("docker rm", 30),
-        ):
-            with (
-                self.subTest(failure=failure),
                 mock.patch.object(
-                    RUNNER.subprocess,
+                    RUNNER,
                     "run",
-                    side_effect=[
-                        self.result(output=f"{CONTAINER_ID}\towner\n".encode()),
-                        failure,
-                    ],
-                ),
+                    side_effect=[f"{CONTAINER_ID}\towner\n".encode(), b"removed\n", b""],
+                ) as run,
+                mock.patch.object(Path, "write_bytes", side_effect=OSError("logs full")),
+                mock.patch.object(Path, "write_text", side_effect=OSError("records full")),
+                self.assertRaises(BaseExceptionGroup),
             ):
-                with self.assertRaises((RuntimeError, subprocess.TimeoutExpired)):
-                    RUNNER.cleanup_container("name", "owner")
+                RUNNER.cleanup_container("name", "owner", commands)
+            self.assertEqual(
+                run.call_args_list[1].args[0], ["docker", "rm", "--force", CONTAINER_ID]
+            )
+            self.assertEqual(run.call_count, 3)
+            self.assertTrue(
+                all(
+                    call.args[1] is None and not call.kwargs["interruptible"]
+                    for call in run.call_args_list
+                )
+            )
 
-
-class RunnerOutcomeTests(unittest.TestCase):
-    def test_primary_failure_survives_cleanup_failure_and_success_requires_cleanup(self) -> None:
-        for outcome, cleanup_fails in (
-            ("success", False),
-            ("success", True),
-            ("exit", False),
-            ("exit", True),
-            ("timeout", False),
-            ("timeout", True),
+    def test_unverified_identity_inspection_removal_and_retirement_fail(self) -> None:
+        for responses in (
+            [f"{CONTAINER_ID}\tforeign\n".encode()],
+            [b"malformed\towner\n"],
+            [RuntimeError("inspect failed")],
+            [f"{CONTAINER_ID}\towner\n".encode(), RuntimeError("remove failed")],
+            [f"{CONTAINER_ID}\towner\n".encode(), b"", f"{CONTAINER_ID}\n".encode()],
+            [f"{CONTAINER_ID}\towner\n".encode(), b"", b"invalid inventory\n"],
         ):
-            run_fails = outcome != "success"
-            with self.subTest(outcome=outcome, cleanup_fails=cleanup_fails):
-                with tempfile.TemporaryDirectory(prefix="kapsel-storage-outcome-") as temporary:
-                    directory = Path(temporary)
-                    (directory / "repo/tests/qualification").mkdir(parents=True)
-                    evidence = directory / "evidence"
-                    evidence.mkdir()
-                    previous = Path.cwd()
+            with self.subTest(responses=responses):
+                commands = mock.Mock()
+                commands.execute.side_effect = responses
+                with self.assertRaises(RuntimeError):
+                    RUNNER.cleanup_container("name", "owner", commands)
+                if len(responses) == 1:
+                    self.assertEqual(commands.execute.call_count, 1)
 
-                    resolved_root = (directory / "repo").resolve()
 
-                    def run(
-                        command: list[str],
-                        *,
-                        selected_outcome: str = outcome,
-                        selected_root: Path = resolved_root,
-                        **kwargs: object,
-                    ) -> subprocess.CompletedProcess:
-                        self.assertEqual(
-                            command[command.index("--user") + 1],
-                            f"{os.getuid()}:{os.getgid()}",
-                        )
-                        self.assertIn("CARGO_HOME=/tmp/kapsel-cargo", command)
-                        self.assertEqual(
-                            command[command.index("--tmpfs") + 1],
-                            "/kapsel-enospc:rw,nosuid,nodev,noexec,size=100663296,mode=0700,"
-                            f"uid={os.getuid()},gid={os.getgid()}",
-                        )
-                        self.assertIn("--cap-drop=ALL", command)
-                        self.assertIn("--security-opt=no-new-privileges", command)
-                        self.assertIn(
-                            "type=bind,src=" + str(selected_root) + ",dst=/workspace,readonly",
-                            command,
-                        )
-                        kwargs["stdout"].write(
-                            b"KAPSEL_ADMISSION_ENOSPC_PASSED\n"
-                            b"KAPSEL_REAL_ENOSPC_CASES_PASSED\n"
-                            b"test result: ok. 1 passed; 0 failed; 0 ignored\n"
-                        )
-                        if selected_outcome == "timeout":
-                            raise subprocess.TimeoutExpired(command, 1800)
-                        return subprocess.CompletedProcess(
-                            command, int(selected_outcome != "success")
-                        )
+class OutcomeTests(unittest.TestCase):
+    def exercise(self, evidence: Path, outcome: str, prepare_only: bool = False) -> dict:
+        commands: list[list[str]] = []
 
-                    output = io.StringIO()
-                    try:
-                        with (
-                            mock.patch.object(
-                                RUNNER,
-                                "__file__",
-                                str(directory / "repo/tests/qualification/runner.py"),
-                            ),
-                            mock.patch.object(
-                                RUNNER.tempfile, "mkdtemp", return_value=str(evidence)
-                            ),
-                            mock.patch.object(
-                                RUNNER, "capture_source", return_value=("base", b"", {})
-                            ),
-                            mock.patch.object(RUNNER, "verify_source"),
-                            mock.patch.object(RUNNER.subprocess, "run", side_effect=run),
-                            mock.patch.object(
-                                RUNNER,
-                                "cleanup_container",
-                                side_effect=RuntimeError("cleanup uncertainty")
-                                if cleanup_fails
-                                else None,
-                                return_value="verified cleanup\n",
-                            ),
-                            contextlib.redirect_stdout(output),
-                        ):
-                            if run_fails and cleanup_fails:
-                                with self.assertRaises(BaseExceptionGroup) as caught:
-                                    RUNNER.main()
-                                self.assertIsInstance(
-                                    caught.exception.exceptions[0],
-                                    SystemExit if outcome == "exit" else subprocess.TimeoutExpired,
-                                )
-                                self.assertIn(
-                                    "fixture failed" if outcome == "exit" else "timed out",
-                                    str(caught.exception.exceptions[0]),
-                                )
-                                self.assertIn(
-                                    "cleanup uncertainty", str(caught.exception.exceptions[1])
-                                )
-                            elif run_fails:
-                                with self.assertRaises(
-                                    SystemExit if outcome == "exit" else subprocess.TimeoutExpired
-                                ):
-                                    RUNNER.main()
-                            elif cleanup_fails:
-                                with self.assertRaisesRegex(RuntimeError, "cleanup uncertainty"):
-                                    RUNNER.main()
-                            else:
-                                RUNNER.main()
-                    finally:
-                        os.chdir(previous)
-                    succeeded = not run_fails and not cleanup_fails
-                    self.assertEqual((evidence / "result.txt").exists(), succeeded)
-                    self.assertEqual("KAPSEL_STORAGE_ENOSPC_PASSED" in output.getvalue(), succeeded)
+        def execute(
+            _self: RUNNER.Commands,
+            command: list[str],
+            timeout: float = 30,
+            *,
+            retirement: bool = False,
+        ) -> bytes:
+            commands.append(command)
+            if command[0] == "git":
+                return b"dirty\n" if "status" in command else b"b" * 40 + b"\n"
+            if command[1] == "create":
+                return CONTAINER_ID.encode()
+            if command[1] == "start":
+                return b"started"
+            if command[1] == "inspect":
+                owner = next(
+                    part.split("=", 1)[1]
+                    for part in commands[3]
+                    if part.startswith("cloud.kapsel.storage-evidence=")
+                )
+                return f"{CONTAINER_ID}\t{owner if outcome != 'owner' else 'foreign'}\n".encode()
+            if command[1] == "rm":
+                if outcome in ("cleanup", "exit-and-cleanup"):
+                    raise RuntimeError("cleanup uncertainty")
+                return b"removed"
+            if command[1] == "container":
+                return b""
+            self.assertEqual(command[:3], ["docker", "exec", CONTAINER_ID])
+            if command[3] == "rustup":
+                return b"1.98.0-x86_64-unknown-linux-gnu (active, default)\n"
+            if command[3] == "rustc":
+                channel = "wrong" if outcome == "toolchain" else "1.98.0"
+                return f"release: {channel}\nhost: {RUNNER.TARGET}\n".encode()
+            if command[3] == "uname":
+                return b"Linux fixture\n"
+            if command[3] == "cargo":
+                return artifact_output()
+            if command[3] == "sha256sum":
+                return b"c" * 64 + b"  executable\n"
+            self.assertEqual(command[3], EXECUTABLE)
+            case = command[4]
+            self.assertIn("--exact", command)
+            self.assertIn("--ignored", command)
+            if "--list" in command:
+                return b"0 tests, 0 benchmarks\n" if outcome == "zero" else listing(case)
+            if outcome == "timeout":
+                raise subprocess.TimeoutExpired(command, timeout)
+            if outcome == "interrupt":
+                raise KeyboardInterrupt("interrupted")
+            if outcome in ("exit", "exit-and-cleanup"):
+                raise RuntimeError("primary test failure")
+            return (
+                completion(case).replace(b"KAPSEL_MAXIMAL_COMPLETION_PASSED", b"")
+                if outcome == "marker"
+                else completion(case)
+            )
+
+        with mock.patch.object(RUNNER.Commands, "execute", autospec=True, side_effect=execute):
+            RUNNER.qualify(ROOT, evidence / "cache", evidence, prepare_only)
+        report = json.loads((evidence / "result.json").read_text())
+        self.assertEqual(sum(command[3:4] == ["cargo"] for command in commands), 1)
+        self.assertEqual(report["source"]["dirty"], True)
+        self.assertEqual(report["cargo_artifacts"], {"fresh": 1, "compiled": 0})
+        self.assertEqual(report["removed_container_id"], CONTAINER_ID)
+        return report
+
+    def test_success_and_preparation_have_distinct_evidence(self) -> None:
+        for prepare_only in (False, True):
+            with tempfile.TemporaryDirectory() as temporary:
+                report = self.exercise(Path(temporary), "success", prepare_only)
+                self.assertEqual(report["outcome"], "PREPARED" if prepare_only else "QUALIFIED")
+                self.assertEqual(
+                    report["executed_cases"], [] if prepare_only else list(RUNNER.CASES)
+                )
+                for timing in (
+                    "setup_seconds",
+                    "build_seconds",
+                    "execution_seconds",
+                    "total_seconds",
+                ):
+                    self.assertGreaterEqual(report[timing], 0)
+
+    def test_all_execution_failures_leave_incomplete_and_preserve_primary_failure(self) -> None:
+        for outcome in (
+            "marker",
+            "zero",
+            "timeout",
+            "interrupt",
+            "exit",
+            "owner",
+            "cleanup",
+            "toolchain",
+            "exit-and-cleanup",
+        ):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as temporary:
+                evidence = Path(temporary)
+                with self.assertRaises(BaseException) as caught:
+                    self.exercise(evidence, outcome)
+                if outcome == "exit-and-cleanup":
+                    self.assertIsInstance(caught.exception, BaseExceptionGroup)
+                    group = caught.exception
+                    self.assertIn("primary test failure", str(group.exceptions[0]))
+                    self.assertIn("cleanup uncertainty", str(group.exceptions[1]))
+                self.assertEqual(
+                    json.loads((evidence / "result.json").read_text())["outcome"], "INCOMPLETE"
+                )
 
 
 if __name__ == "__main__":
