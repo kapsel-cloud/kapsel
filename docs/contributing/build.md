@@ -121,15 +121,16 @@ workflow retirement remains a separate cutover.
 
 ## Route qualification during iteration
 
-Select additional evidence by the changed guarantee, not the filename or patch size. Use focused
-checks while editing. Run the owning broader gate on the finished snapshot, without repeating its
-included checks on unchanged inputs.
+Select additional qualification only when its physical premise changes, not by filename or patch
+size. Deterministic recovery or classification changes use their owning checks. Use focused checks
+while editing. Run the owning broader gate on the finished snapshot, without repeating its included
+checks on unchanged inputs.
 
 | Changed guarantee                                            | Additional evidence                                                |
 | ------------------------------------------------------------ | ------------------------------------------------------------------ |
 | Qualification argument grammar, bookkeeping or report fields | Controller regressions and the Python static gate                  |
 | Artifact selection, transfer, custody or caller binding      | One affected selected-byte packaged witness                        |
-| Recovery, receiver behavior or observation timing            | Affected physical cases with their prerequisites                   |
+| Physical recovery, receiver behavior or timing premise       | Affected physical cases with their prerequisites                   |
 | Archive format or sidecars                                   | Offline verifier vectors                                           |
 | Assembly or shipped assets                                   | Source correspondence, extracted smoke/guide and A/B proof         |
 | Native launch or service unit                                | Fresh-host native profile                                          |
@@ -148,7 +149,8 @@ final release acceptance still requires the actual clean candidate bytes.
 [Test strategy](testing.md) explains where tests belong. The [evidence map](evidence.md) connects
 guarantees to checks. [Qualification](qualification.md) contains Linux process, real Git, live
 Kubernetes, ENOSPC, simulation, fuzz, security-scan, and artifact commands with their prerequisites.
-Those lanes are separate from the everyday loop; run the ones required by the changed boundary.
+Linux source-process and local Git checks are included in the applicable everyday areas. Add other
+qualification only when its physical premise changes.
 
 The `fuzz` crate is outside the workspace for cargo-fuzz and does not inherit workspace settings.
 The deterministic Rust gate checks its locked dependency graph, Clippy diagnostics, and maintained

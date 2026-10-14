@@ -353,7 +353,10 @@ def finding_marker(error: CommandFailed) -> dict:
     matches = re.findall(r"^KAPSEL_KERNEL_FINDING (.+)$", error.output, re.MULTILINE)
     if error.status != 101 or len(matches) != 1:
         raise Incomplete("simulation failed without a complete law finding") from error
-    value = json.loads(matches[0])
+    return validate_finding(json.loads(matches[0]))
+
+
+def validate_finding(value: object) -> dict:
     if (
         not isinstance(value, dict)
         or not isinstance(value.get("law"), str)
@@ -480,13 +483,14 @@ def simulation(job: Job, args: argparse.Namespace, source: str) -> None:
             failures = list(job.evidence.glob(f"traces-{seed}-*/failure.json"))
             if not failures:
                 raise Incomplete("missing retained finding") from error
+            marker_retained = False
             for failure in failures:
                 report = read_json(failure)
+                retained_finding = validate_finding(report.get("finding"))
+                marker_retained |= retained_finding == finding
                 case = report.get("case")
-                if (
-                    type(case) is not int
-                    or not 0 <= case < (10000 * args.shards if duration else args.cases)
-                    or report.get("finding") != finding
+                if type(case) is not int or not 0 <= case < (
+                    10000 * args.shards if duration else args.cases
                 ):
                     raise Incomplete("finding record mismatch") from error
                 for name in (f"case-{case}.json", f"finding-{case}.json"):
@@ -498,8 +502,14 @@ def simulation(job: Job, args: argparse.Namespace, source: str) -> None:
                     ):
                         raise Incomplete("finding trace identity mismatch") from error
                     replayed = replay_trace(job, command, path)
-                    if replayed is None or replayed["law"] != finding["law"]:
+                    if (
+                        replayed is None
+                        or replayed["law"] != retained_finding["law"]
+                        or (name == f"case-{case}.json" and replayed != retained_finding)
+                    ):
                         raise Incomplete("retained finding did not reproduce") from error
+            if not marker_retained:
+                raise Incomplete("finding record mismatch") from error
             raise Finding(finding["law"]) from error
         for index, output in enumerate(outputs):
             if duration:

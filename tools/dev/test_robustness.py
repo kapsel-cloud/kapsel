@@ -444,6 +444,69 @@ class RobustnessTests(unittest.TestCase):
                 runner.simulation(self.job, args, "a" * 64)
         self.assertEqual(runner.read_json(self.evidence / "traces-7-0/case-0.json"), original)
 
+    def test_simultaneous_shard_findings_replay_against_their_own_reports(self):
+        binary = self.root / "shard-binary"
+        binary.write_bytes(b"fixture")
+        digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+        findings = [
+            {"law": "dispatch_provenance", "event": event, "defect_reached": ["Remint"]}
+            for event in (3, 7)
+        ]
+        args = argparse.Namespace(
+            executable=binary, replay=None, seed=[7], cases=2, shards=2, steps=32, duration=None
+        )
+        for mismatched_replay in (False, True):
+            with self.subTest(mismatched_replay=mismatched_replay):
+                evidence = self.evidence / str(mismatched_replay)
+                evidence.mkdir()
+                job = runner.Job(evidence, 10)
+                replayed_paths = []
+
+                def commands(
+                    selected,
+                    environments=None,
+                    mismatched_replay=mismatched_replay,
+                    replayed_paths=replayed_paths,
+                ):
+                    assert environments is not None
+                    if "KAPSEL_KERNEL_REPLAY" in environments[0]:
+                        path = Path(environments[0]["KAPSEL_KERNEL_REPLAY"])
+                        replayed_paths.append(path)
+                        index = int(path.parent.name.rsplit("-", 1)[1])
+                        finding = findings[index]
+                        if path.name.startswith("finding-"):
+                            finding = {**finding, "event": 1}
+                        elif mismatched_replay and index == 1:
+                            finding = findings[0]
+                        raise runner.CommandFailed(
+                            101, "KAPSEL_KERNEL_FINDING " + json.dumps(finding)
+                        )
+                    for index, environment in enumerate(environments):
+                        directory = Path(environment["KAPSEL_KERNEL_EVIDENCE"])
+                        runner.atomic_json(
+                            directory / "failure.json", {"case": index, "finding": findings[index]}
+                        )
+                        for name in (f"case-{index}.json", f"finding-{index}.json"):
+                            runner.atomic_json(
+                                directory / name,
+                                {"executable_sha256": digest, "source_sha256": "a" * 64},
+                            )
+                    raise runner.CommandFailed(
+                        101, "KAPSEL_KERNEL_FINDING " + json.dumps(findings[0])
+                    )
+
+                with patch.object(job, "run", side_effect=commands):
+                    if mismatched_replay:
+                        with self.assertRaisesRegex(runner.Incomplete, "did not reproduce"):
+                            runner.simulation(job, args, "a" * 64)
+                    else:
+                        with self.assertRaises(runner.Finding):
+                            runner.simulation(job, args, "a" * 64)
+                        self.assertEqual(
+                            {path.name for path in replayed_paths},
+                            {"case-0.json", "finding-0.json", "case-1.json", "finding-1.json"},
+                        )
+
     def test_simulation_panics_without_reached_law_evidence_are_incomplete(self):
         for error in (
             runner.CommandFailed(101, "panicked at setup"),

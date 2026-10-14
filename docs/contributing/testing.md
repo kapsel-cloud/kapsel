@@ -396,9 +396,9 @@ cannot establish interaction equivalence.
 | `ReceiverRead`                            | `ObservationLost`: recovery freezes its current observation; the interruption is fresh-only                         |
 | `ReceiverObservedCommitted`               | `Frozen`: receiver replacement and trust withdrawal add no observation; completion retains original facts and bytes |
 
-The local `receiver_read_fault_is_fresh_only_and_recovery_freezes_its_own_observation` regression
-retains its direct driver check. An unsent Kubernetes receiver stays unchanged; a preloaded failed
-observation is not evidence of a sent mutation. Legacy grants retain the
+The simulator's `ObservationLost` compact interruption owns fresh-only receiver-read interruption
+and recovery's current observation freeze. An unsent Kubernetes receiver stays unchanged; a
+preloaded failed observation is not evidence of a sent mutation. Legacy grants retain the
 `service_reads_but_cannot_advance_retained_legacy_authority` and snapshot/binding owners. Format-6
 inert `target_read_failures` checks remain in gateway lifecycle/storage tests.
 

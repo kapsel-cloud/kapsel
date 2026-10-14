@@ -639,13 +639,63 @@ mod tests {
             acknowledgement,
             observed: observed.clone(),
         };
+        let assert_unfinished_reads = |observed_ref| {
+            let before = named_git_row(&journal.connection, "git-mapping");
+            let control = records::Control::default();
+            let app = ServiceApplication::open_simulated(
+                ServiceConfiguration {
+                    journal_path: scratch.0.join("journal.sqlite3"),
+                    authorization_trust: vec![trust()],
+                    approvals: vec![],
+                },
+                control.clone(),
+            )
+            .unwrap();
+            let targets = OperationTargets {
+                git: Some(GitOperationTargets {
+                    approval: binding.authorization().clone(),
+                    attempted: true,
+                    acknowledgement: Some(acknowledgement),
+                    observed_ref,
+                }),
+                ..OperationTargets::default()
+            };
+            let expected = (OperationStatus::InProgress, targets);
+            assert_eq!(app.status("git-mapping").unwrap(), expected);
+            assert_eq!(
+                app.execution_status("git-mapping", ExecutionObservation::Unknown)
+                    .unwrap(),
+                (
+                    expected.0,
+                    expected.1.clone(),
+                    ExecutionDisposition::ResumeRequired(None)
+                )
+            );
+            let page = app.history(None).unwrap();
+            let entry = page
+                .entries
+                .iter()
+                .find(|entry| entry.operation_id == "git-mapping");
+            assert_eq!(entry.unwrap().status, Ok(expected));
+            assert_eq!(
+                app.receipt("git-mapping").unwrap(),
+                OperationReceipt::NotReady
+            );
+            assert!(
+                control.events().is_empty(),
+                "reads perform no durable transition"
+            );
+            assert_eq!(named_git_row(&journal.connection, "git-mapping"), before);
+        };
         let worker = journal.try_lock_worker().unwrap().unwrap();
         journal
             .record_git_acknowledgement(&binding, acknowledgement, &worker)
             .unwrap();
+        assert_unfinished_reads(None);
         journal
             .freeze_git_observation(&binding, observed, &worker)
             .unwrap();
+        assert_unfinished_reads(Some(observed.clone()));
         let expected_row = named_git_row(&expected_journal.connection, "git-mapping");
         assert_eq!(
             named_git_row(&journal.connection, "git-mapping"),
@@ -817,6 +867,18 @@ mod tests {
                 OperationStatus::InProgress,
             ),
             (
+                "apply_started",
+                Acknowledgement::Updated,
+                "updated",
+                OperationStatus::InProgress,
+            ),
+            (
+                "apply_started",
+                Acknowledgement::ReceiverRejected,
+                "receiver_rejected",
+                OperationStatus::InProgress,
+            ),
+            (
                 "receiver_observed",
                 Acknowledgement::Unknown,
                 "unknown",
@@ -863,6 +925,19 @@ mod tests {
                     )
                     .unwrap();
             }
+            let attempted_acknowledgement = (phase == "apply_started"
+                && acknowledgement != Acknowledgement::Unknown)
+                .then_some(acknowledgement);
+            if let Some(retained) = attempted_acknowledgement {
+                journal
+                    .connection
+                    .execute(
+                        "UPDATE git_ref_operations SET acknowledgement = ?1
+                         WHERE operation_id = 'public-git-read'",
+                        [retained.as_str()],
+                    )
+                    .unwrap();
+            }
             let before = named_git_row(&journal.connection, "public-git-read");
             drop(journal);
             let control = records::Control::default();
@@ -883,7 +958,9 @@ mod tests {
                 git: Some(GitOperationTargets {
                     approval: binding.authorization().clone(),
                     attempted: matches!(phase, "apply_started" | "receiver_observed" | "finalized"),
-                    acknowledgement: frozen.then_some(acknowledgement),
+                    acknowledgement: frozen
+                        .then_some(acknowledgement)
+                        .or(attempted_acknowledgement),
                     observed_ref: frozen.then(|| ObservedRef::Commit("b".repeat(40))),
                 }),
             };
