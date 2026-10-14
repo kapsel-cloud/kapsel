@@ -186,7 +186,7 @@ owners. All fixtures and production write statements remain part of the maintain
 | Observation                                                                        | Owner                                                                  |
 | ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
 | Exact policy boundaries, existing identity and competing last-slot connections     | Gateway `validation`; journal Git mixed-effect counts and finalization |
-| Lifecycle interruptions, commit alternatives, immutable evidence and useful repair | Independent application laws on both stores                            |
+| Lifecycle interruptions, commit alternatives, immutable evidence and useful repair | Virtual temporal laws plus the local 39-case SQLite bridge             |
 | Encoded payload, sparse trees, padded schema and noncanonical header controls      | `capacity_layout`                                                      |
 | Configured-full completion, executed SQL plans and main rollback framing           | `storage`                                                              |
 | Before-SQL, precommit, committed receipt and genuine hot rollback reopening        | Two-row `storage` process fixture                                      |

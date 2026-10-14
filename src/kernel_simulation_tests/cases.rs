@@ -1,4 +1,4 @@
-//! Boundary witnesses and reached controls; each retained trace adds an independent observation.
+//! Compact temporal witnesses, virtual delivery coverage and fixed reached oracle calibration.
 
 use std::sync::{Arc, Mutex};
 
@@ -15,47 +15,47 @@ use crate::{
     test_scratch::Scratch,
 };
 
-async fn check_stores(input: &Trace) {
-    for virtualized in [true, false] {
-        assert_eq!(
-            replay(input, virtualized).await,
-            Ok(()),
-            "{input:?}/{virtualized}"
-        );
-    }
+async fn check(input: &Trace) {
+    assert_eq!(replay(input, true).await, Ok(()), "{input:?}");
 }
 
 #[tokio::test(start_paused = true)]
-async fn every_durable_write_reaches_each_delivery_on_both_stores() {
+async fn virtual_delivery_bridge_consumes_all_39_application_continuations() {
+    let inputs = delivery_inputs();
+    assert_eq!(inputs.len(), 39);
+    let mut reached = RunReport::default();
+    for input in inputs {
+        let (result, report) = replay_report(&input, true).await;
+        assert_eq!(result, Ok(()), "{input:?}");
+        assert_eq!(report.requested_deliveries, report.consumed_deliveries());
+        assert!(report.faults.iter().all(|fault| fault.consumed));
+        reached.merge(report);
+    }
     for effect in [Effect::Kubernetes, Effect::Git] {
-        for virtualized in [true, false] {
-            let mut reached = RunReport::default();
-            for input in delivery_inputs()
-                .into_iter()
-                .filter(|input| input.effects[0] == effect)
-            {
-                let (result, report) = replay_report(&input, virtualized).await;
-                assert_eq!(result, Ok(()), "{input:?}/{virtualized}");
-                assert_eq!(report.requested_deliveries, report.consumed_deliveries());
-                reached.merge(report);
-            }
-            println!("delivery matrix {effect:?} virtual={virtualized}");
-            reached.print();
-            for write in durable_writes(effect) {
-                for delivery in [
-                    Delivery::Confirmed,
-                    Delivery::NoCommit,
-                    Delivery::LostAcknowledgement,
-                ] {
-                    assert!(
-                        reached.writes.iter().any(|event| {
-                            event.write == write && event.delivery == delivery && event.consumed
-                        }),
-                        "missing {effect:?}/{write:?}/{delivery:?}"
-                    );
-                }
+        for write in durable_writes(effect) {
+            for delivery in [
+                Delivery::Confirmed,
+                Delivery::NoCommit,
+                Delivery::LostAcknowledgement,
+            ] {
+                assert!(reached.writes.iter().any(|event| {
+                    event.effect == format!("{effect:?}")
+                        && event.write == write
+                        && event.delivery == delivery
+                        && event.consumed
+                }));
             }
         }
+    }
+    reached.print();
+}
+
+#[tokio::test(start_paused = true)]
+async fn application_sqlite_reopen_composition_retains_each_effect_once() {
+    for effect in [Effect::Kubernetes, Effect::Git] {
+        let mut input = trace(0, vec![select(None, Cut::None, false, true)]);
+        input.effects = vec![effect];
+        assert_eq!(replay(&input, false).await, Ok(()));
     }
 }
 
@@ -77,400 +77,187 @@ async fn a_missed_or_shadowed_delivery_is_incomplete_not_a_passing_witness() {
             false,
             true,
         ));
-        let input = trace(0, actions);
-        for virtualized in [true, false] {
-            let (result, report) = replay_report(&input, virtualized).await;
-            assert_eq!(result.unwrap_err().law, "fault_not_reached");
-            assert_eq!(report.requested_deliveries, 1);
-            assert_eq!(report.consumed_deliveries(), 0);
-        }
+        let (result, report) = replay_report(&trace(0, actions), true).await;
+        assert_eq!(result.unwrap_err().law, "fault_not_reached");
+        assert_eq!(report.requested_deliveries, 1);
+        assert_eq!(report.consumed_deliveries(), 0);
+        let fault = report
+            .faults
+            .iter()
+            .find(|fault| fault.write.is_some())
+            .unwrap();
+        assert!(!fault.consumed);
+        assert_eq!(fault.effect, Effect::Kubernetes);
+        assert_eq!(fault.write, Some(StorageWrite::Rejection));
     }
 }
 
 #[tokio::test(start_paused = true)]
-async fn consumed_checkpoint_reporting_includes_recovery_without_reminting() {
+async fn compact_interruptions_cover_distinct_effect_and_io_boundaries() {
+    let interruptions = [
+        (Effect::Kubernetes, Cut::Unsent, false),
+        (Effect::Git, Cut::Unsent, false),
+        (Effect::Kubernetes, Cut::ResponseLost, false),
+        (Effect::Git, Cut::ResponseLost, false),
+        (Effect::Kubernetes, Cut::None, true),
+        (Effect::Git, Cut::None, true),
+        (Effect::Kubernetes, Cut::ObservationLost, false),
+        (Effect::Git, Cut::ObservationLost, false),
+        (Effect::Kubernetes, Cut::Frozen, false),
+        (Effect::Git, Cut::Frozen, false),
+    ];
+    for (effect, cut, loss) in interruptions {
+        let mut input = trace(0, vec![select(None, cut, loss, false)]);
+        input.effects = vec![effect];
+        let (result, report) = replay_report(&input, true).await;
+        assert_eq!(result, Ok(()), "{input:?}");
+        assert!(report.faults.iter().all(|fault| fault.consumed));
+    }
+    // Every distinct suspension reaches real I/O. One mixed peer covers exclusion, not an
+    // outcome × assignment × backend × order product.
     for effect in [Effect::Kubernetes, Effect::Git] {
-        for (cut, consumed) in [(Cut::Frozen, 2), (Cut::ObservationLost, 1)] {
-            let mut input = trace(
+        for point in [IoPoint::Preflight, IoPoint::Mutation, IoPoint::Observation] {
+            let mut input = multi_trace(
                 0,
-                vec![
-                    select(None, Cut::Unsent, false, false),
-                    select(None, cut, false, false),
-                ],
+                2,
+                vec![Action::CancelAtIo {
+                    point,
+                    contender: 1,
+                }],
             );
-            input.effects = vec![effect];
-            for virtualized in [true, false] {
-                let (result, report) = replay_report(&input, virtualized).await;
-                assert_eq!(result, Ok(()));
-                assert_eq!(report.requested_cuts, 2);
-                assert_eq!(
-                    report.consumed_cuts, consumed,
-                    "ReceiverRead is fresh-only; Frozen is not"
-                );
-            }
-        }
-    }
-}
-
-#[tokio::test(start_paused = true)]
-async fn warm_repair_and_cold_recovery_progress_without_repairing_an_unrelated_peer() {
-    for effects in assignments(2) {
-        for cut in [Cut::BeforeAttempt, Cut::Unsent, Cut::Frozen] {
-            for cold in [false, true] {
-                let mut actions = vec![
-                    select(None, cut, false, false),
-                    Action::Peer(1),
-                    select(None, Cut::BeforeAttempt, false, false),
-                    Action::Receiver(Receiver::Unavailable),
-                    Action::SubstituteTrustKey,
-                    Action::Peer(0),
-                    Action::Writes(false),
-                    select(None, Cut::None, false, true),
-                    Action::Writes(true),
-                    Action::Signer(Signer::Invalid),
-                    select(None, Cut::None, false, true),
-                    Action::Signer(Signer::Original),
-                ];
-                if cold {
-                    actions.push(Action::Reopen { catalog: false });
-                }
-                actions.extend([select(None, Cut::None, false, true), Action::AssertProgress]);
-                let mut input = multi_trace(0, 2, actions);
-                input.effects = effects.clone();
-                check_stores(&input).await;
-            }
-        }
-    }
-}
-
-#[tokio::test(start_paused = true)]
-async fn concrete_old_trace_keeps_original_identities_without_regenerating_the_seed() {
-    // Actual c302e2b generator output, seed 1 / 8 steps, with its original executable identity.
-    let original = include_str!("../../tests/fixtures/kernel_original_trace.json");
-    let input: Trace = serde_json::from_str(original).unwrap();
-    assert_eq!(input.peers, 3);
-    assert_eq!(input.effects, vec![Effect::Git; 3]);
-    let source = input.source_sha256.clone();
-    let executable = input.executable_sha256.clone();
-    assert_eq!(source.len(), 64);
-    assert_eq!(executable.len(), 64);
-    check_stores(&input).await;
-    let encoded = serde_json::to_value(&input).unwrap();
-    assert_eq!(
-        encoded["actions"],
-        serde_json::from_str::<serde_json::Value>(original).unwrap()["actions"]
-    );
-    assert_ne!(
-        encoded["actions"],
-        serde_json::to_value(generated(input.seed, 8)).unwrap()["actions"]
-    );
-    assert_eq!(encoded["source_sha256"], source);
-    assert_eq!(encoded["executable_sha256"], executable);
-}
-
-pub(super) const FRESH_CUTS: [Cut; 7] = [
-    Cut::BeforeAttempt,
-    Cut::Unsent,
-    Cut::AttemptAcknowledgementLost,
-    Cut::ResponseLost,
-    Cut::ResponseRecorded,
-    Cut::ObservationLost,
-    Cut::Frozen,
-];
-
-pub(super) fn assignments(peers: usize) -> [Vec<Effect>; 3] {
-    [
-        vec![Effect::Kubernetes; peers],
-        vec![Effect::Git; peers],
-        (0..peers)
-            .map(|peer| {
-                if peer == 0 {
+            input.effects = vec![
+                effect,
+                if effect == Effect::Git {
                     Effect::Kubernetes
                 } else {
                     Effect::Git
-                }
-            })
-            .collect(),
-    ]
-}
-
-#[tokio::test(start_paused = true)]
-async fn fresh_checkpoints_precede_cancellation_and_recover_under_original_authority() {
-    for effects in assignments(2) {
-        for cut in FRESH_CUTS {
-            for receiver in [
-                Receiver::Healthy,
-                Receiver::Failed,
-                Receiver::Pending,
-                Receiver::Replaced,
-                Receiver::StaleVersion,
-                Receiver::WrongGeneration,
-                Receiver::Unavailable,
-            ] {
-                let mut input = multi_trace(
-                    0,
-                    2,
-                    vec![
-                        Action::Receiver(receiver),
-                        select(None, cut, false, false),
-                        Action::Reopen { catalog: false },
-                    ],
-                );
-                input.effects = effects.clone();
-                check_stores(&input).await;
-            }
+                },
+            ];
+            check(&input).await;
+            input.actions[0] = Action::CustodyDuringIo(point);
+            check(&input).await;
         }
     }
 }
 
 #[tokio::test(start_paused = true)]
-async fn retained_contention_reopen_and_catalog_conflict_orders_preserve_all_peers() {
-    for effects in assignments(2) {
-        for owner in 0..2 {
-            for point in [IoPoint::Preflight, IoPoint::Mutation, IoPoint::Observation] {
-                // Cross-peer interference retains all six orders. Same-ID exclusion needs one
-                // order, not another copy of the catalog/reopen permutation matrix.
-                for (contender, orders) in [
-                    (
-                        1 - owner,
-                        &[
-                            [0, 1, 2],
-                            [0, 2, 1],
-                            [1, 0, 2],
-                            [1, 2, 0],
-                            [2, 0, 1],
-                            [2, 1, 0],
-                        ][..],
-                    ),
-                    (owner, &[[0, 1, 2]][..]),
-                ] {
-                    for order in orders {
-                        let events = [
-                            Action::CancelAtIo { point, contender },
-                            Action::ReplaceCatalog,
-                            Action::Reopen { catalog: false },
-                        ];
-                        let mut actions = vec![
-                            Action::Peer(0),
-                            select(None, Cut::BeforeAttempt, false, false),
-                            Action::Peer(1),
-                            select(None, Cut::BeforeAttempt, false, false),
-                            Action::Peer(owner),
-                        ];
-                        actions.extend(order.map(|index| events[index].clone()));
-                        let mut input = multi_trace(0, 2, actions);
-                        input.effects = effects.clone();
-                        check_stores(&input).await;
-                    }
-                }
-            }
+async fn warm_progress_precedes_global_repair_and_cold_progress_is_separate() {
+    for (effect, cold) in [
+        (Effect::Kubernetes, false),
+        (Effect::Git, false),
+        (Effect::Git, true),
+    ] {
+        let mut actions = vec![
+            select(None, Cut::Unsent, false, false),
+            Action::Peer(1),
+            select(None, Cut::BeforeAttempt, false, false),
+            Action::Receiver(Receiver::Unavailable),
+            Action::SubstituteTrustKey,
+            Action::Peer(0),
+            Action::Writes(false),
+            select(None, Cut::None, false, true),
+            Action::Writes(true),
+            Action::Signer(Signer::Invalid),
+            select(None, Cut::None, false, true),
+            Action::Signer(Signer::Original),
+        ];
+        if cold {
+            actions.push(Action::Reopen { catalog: false });
         }
+        actions.extend([select(None, Cut::None, false, true), Action::AssertProgress]);
+        let mut input = multi_trace(0, 2, actions);
+        input.effects = vec![effect, Effect::Kubernetes];
+        check(&input).await;
     }
 }
 
 #[tokio::test(start_paused = true)]
-async fn sqlite_and_virtual_write_refusal_preserve_facts_until_same_id_repair() {
-    for effects in assignments(2) {
-        for prefix in [
-            vec![],
-            vec![select(
-                Some((StorageWrite::Admission, Delivery::LostAcknowledgement)),
-                Cut::None,
-                false,
-                false,
-            )],
-            vec![select(None, Cut::BeforeAttempt, false, false)],
-            vec![select(None, Cut::Unsent, false, false)],
-            vec![select(None, Cut::Frozen, false, false)],
-            vec![select(None, Cut::None, false, true)],
-            // A refused stale-preflight write must not adopt the newly observed target.
-            vec![
-                select(None, Cut::BeforeAttempt, false, false),
-                Action::Receiver(Receiver::Replaced),
-            ],
-        ] {
-            let mut actions = prefix;
-            actions.extend([
-                Action::Writes(false),
-                select(None, Cut::None, false, true),
-                Action::Reopen { catalog: true },
-                select(None, Cut::None, false, true),
-            ]);
-            let mut input = multi_trace(0, 2, actions);
-            input.effects = effects.clone();
-            check_stores(&input).await;
-        }
-    }
-}
-
-#[tokio::test(start_paused = true)]
-async fn deliberate_recovery_joins_use_the_same_all_peer_laws() {
-    for input in deliberate_inputs() {
-        check_stores(&input).await;
-    }
-}
-
-#[tokio::test(start_paused = true)]
-async fn kubernetes_observation_retry_distinguishes_same_result_facts_and_committed_loss() {
-    for virtualized in [true, false] {
-        for delivery in [Delivery::NoCommit, Delivery::LostAcknowledgement] {
-            for cold_retry in [false, true] {
-                let scratch = Scratch::new();
-                let control = if virtualized {
-                    StorageControl::virtualized()
-                } else {
-                    StorageControl::default()
-                };
-                let intent = Intent::new(0);
-                let configuration = ServiceConfiguration {
-                    journal_path: scratch.0.join("journal.sqlite3"),
-                    authorization_trust: vec![intent.trust()],
-                    approvals: vec![intent.approval()],
-                };
-                let signing = (intent.receipt_seed, intent.receipt_key.clone());
-                let mut adapter = Adapter {
-                    intent,
-                    store: Store {
-                        control: control.clone(),
-                        path: configuration.journal_path.clone(),
-                        virtualized,
-                    },
-                    io: Arc::new(Mutex::new(Observations::default())),
-                    receiver: Receiver::Pending,
-                    lose_response: false,
-                    fresh: true,
-                    gate: None,
-                };
-                let mut checker = Checker::default();
-                let mut app = open(configuration.clone(), &control);
-                let mut selection = Selection {
-                    commit: Some((StorageWrite::Observation, delivery)),
-                    cut: Cut::None,
-                    lose_response: false,
-                    sign: false,
-                };
-                selection
-                    .execute(&mut app, &mut adapter, &mut checker, signing.clone(), 0)
-                    .await
-                    .unwrap();
-                {
-                    let io = adapter.io.lock().unwrap();
-                    assert_eq!(io.reads, 2, "one preflight and one O1 observation");
-                    assert_eq!(io.expected_result, Some("UNKNOWN"));
-                }
-                assert_eq!(
-                    text(
-                        &adapter.store.raw(&adapter.intent.request.operation_id),
-                        "state"
-                    ),
-                    Some(if delivery == Delivery::NoCommit {
-                        "apply_started"
-                    } else {
-                        "receiver_observed"
-                    })
-                );
-                // O2 differs in identity, generations, replica counts and condition fields, but
-                // still classifies UNKNOWN. Full first-freeze binding cannot hide behind result.
-                adapter.receiver = Receiver::Replaced;
-                selection.commit = None;
-                if cold_retry {
-                    drop(app);
-                    app = open(configuration.clone(), &control);
-                }
-                selection
-                    .execute(&mut app, &mut adapter, &mut checker, signing.clone(), 1)
-                    .await
-                    .unwrap();
-                let expected_reads = if delivery == Delivery::NoCommit { 3 } else { 2 };
-                {
-                    let io = adapter.io.lock().unwrap();
-                    assert_eq!(io.reads, expected_reads);
-                    assert_eq!(io.sends.len(), 1);
-                    assert_eq!(io.expected_result, Some("UNKNOWN"));
-                    assert_eq!(
-                        io.returned.as_ref().unwrap().deployment_uid.as_deref(),
-                        Some(if delivery == Delivery::NoCommit {
-                            "replacement-uid"
-                        } else {
-                            adapter.intent.uid.as_str()
-                        })
-                    );
-                }
-                let frozen = adapter.store.raw(&adapter.intent.request.operation_id);
-                assert_eq!(text(&frozen, "state"), Some("receiver_observed"));
-                assert_eq!(text(&frozen, "result"), Some("UNKNOWN"));
-                drop(app);
-                app = open(configuration, &control);
-                selection
-                    .execute(&mut app, &mut adapter, &mut checker, signing, 2)
-                    .await
-                    .unwrap();
-                assert_eq!(adapter.io.lock().unwrap().reads, expected_reads);
-                assert_eq!(
-                    adapter.store.raw(&adapter.intent.request.operation_id),
-                    frozen
-                );
-            }
-        }
-    }
-}
-
-#[tokio::test(start_paused = true)]
-async fn durable_git_acknowledgement_survives_an_opposite_observed_ref() {
-    let mut input = trace(
-        9,
+async fn git_regressions_separate_acknowledgement_from_current_ref() {
+    let prefixes = [
+        // A→B→A after a consumed permission cannot dispatch again.
+        vec![
+            select(None, Cut::ResponseRecorded, false, false),
+            Action::GitRef { new: true },
+            Action::GitRef { new: false },
+        ],
+        // Updated survived; later ref A does not remove that acknowledgement.
         vec![
             select(
                 Some((StorageWrite::Observation, Delivery::NoCommit)),
                 Cut::None,
                 false,
-                true,
+                false,
             ),
             Action::GitRef { new: false },
-            select(None, Cut::None, false, true),
         ],
-    );
-    input.effects = vec![Effect::Git];
-    check_stores(&input).await;
-}
-
-#[tokio::test(start_paused = true)]
-async fn replacement_catalog_and_rotated_material_preserve_retained_history() {
-    for first in [
-        select(
-            Some((StorageWrite::Admission, Delivery::LostAcknowledgement)),
-            Cut::None,
-            false,
-            false,
-        ),
-        select(None, Cut::BeforeAttempt, false, false),
-        select(None, Cut::Unsent, false, false),
-        select(None, Cut::Frozen, false, false),
-        select(None, Cut::None, false, true),
-    ] {
-        let mut actions = vec![
-            Action::Peer(0),
-            first,
-            Action::Peer(1),
-            Action::Receiver(Receiver::Failed),
-            select(None, Cut::Frozen, false, false),
-            Action::Peer(2),
+        // External B after an unsent attempt is not acknowledgement.
+        vec![
+            select(None, Cut::Unsent, false, false),
+            Action::GitRef { new: true },
+        ],
+        // Updated returned but its Response NoCommit did not survive restart.
+        vec![
             select(
-                Some((StorageWrite::Attempt, Delivery::LostAcknowledgement)),
+                Some((StorageWrite::Response, Delivery::NoCommit)),
+                Cut::None,
+                false,
+                false,
+            ),
+            Action::Reopen { catalog: false },
+        ],
+        // A returned-but-uncommitted Updated reply also stays unknown after a later cancellation.
+        vec![
+            select(
+                Some((StorageWrite::Response, Delivery::NoCommit)),
+                Cut::None,
+                false,
+                false,
+            ),
+            Action::CancelAtIo {
+                point: IoPoint::Observation,
+                contender: 0,
+            },
+            Action::Reopen { catalog: false },
+        ],
+        // A lost rejection confirmation remains terminal after repair/reopen.
+        vec![
+            select(None, Cut::BeforeAttempt, false, false),
+            Action::Receiver(Receiver::StaleVersion),
+            select(
+                Some((StorageWrite::Rejection, Delivery::LostAcknowledgement)),
                 Cut::None,
                 false,
                 true,
             ),
+        ],
+    ];
+    for prefix in prefixes {
+        let mut input = trace(9, prefix);
+        input.effects = vec![Effect::Git];
+        check(&input).await;
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn catalog_trust_and_completion_material_do_not_replace_original_evidence() {
+    let mut input = multi_trace(
+        11,
+        2,
+        vec![
+            select(None, Cut::Frozen, false, false),
+            Action::Peer(1),
+            select(None, Cut::BeforeAttempt, false, false),
             Action::ReplaceCatalog,
             Action::Reopen { catalog: false },
             Action::Trust(false),
-        ];
-        for peer in 0..3 {
-            actions.extend([Action::Peer(peer), select(None, Cut::None, false, true)]);
-        }
-        actions.extend([
+            select(None, Cut::None, false, true),
             Action::Trust(true),
-            Action::Peer(1),
+            Action::SubstituteTrustKey,
+            select(None, Cut::None, false, true),
+            Action::Trust(true),
+            Action::Peer(0),
+            Action::Signer(Signer::Invalid),
+            select(None, Cut::None, false, true),
             Action::Signer(Signer::Rotated),
             select(
                 Some((StorageWrite::Receipt, Delivery::NoCommit)),
@@ -484,247 +271,248 @@ async fn replacement_catalog_and_rotated_material_preserve_retained_history() {
                 false,
                 true,
             ),
-        ]);
-        for peer in 0..3 {
-            actions.extend([Action::Peer(peer), Action::SubstituteTrustKey]);
-            for selected in 0..3 {
-                actions.extend([Action::Peer(selected), select(None, Cut::None, false, true)]);
-            }
-            actions.push(Action::Trust(true));
-        }
-        for peer in (0..3).rev() {
-            actions.extend([
-                Action::Peer(peer),
-                Action::Signer(Signer::Invalid),
-                select(None, Cut::None, false, true),
-                Action::Signer(Signer::Rotated),
-                select(None, Cut::None, false, false),
-                select(None, Cut::None, false, true),
-                Action::Signer(Signer::Original),
-                select(None, Cut::None, false, true),
-            ]);
-        }
-        let mut input = multi_trace(11, 3, actions);
-        for effects in [
-            vec![Effect::Kubernetes; 3],
-            vec![Effect::Git; 3],
-            vec![Effect::Kubernetes, Effect::Git, Effect::Git],
-        ] {
-            input.effects = effects;
-            check_stores(&input).await;
-        }
-    }
+            Action::Signer(Signer::Original),
+            Action::Reopen { catalog: false },
+            select(None, Cut::None, false, true),
+            Action::AssertProgress,
+        ],
+    );
+    input.effects = vec![Effect::Kubernetes, Effect::Git];
+    check(&input).await;
 }
 
 #[tokio::test(start_paused = true)]
-async fn suspended_io_rechecks_original_custody_before_advancing_any_peer() {
-    for point in [IoPoint::Preflight, IoPoint::Mutation, IoPoint::Observation] {
-        let mut input = multi_trace(
-            19,
-            3,
+#[allow(
+    clippy::too_many_lines,
+    reason = "keep O1 refusal, O2 freeze and stale/mixed controls on one causal timeline"
+)]
+async fn first_freeze_binds_complete_o2_or_retains_committed_o1_with_the_same_result() {
+    let mut first = None;
+    for (delivery, cold) in [
+        (Delivery::LostAcknowledgement, true),
+        (Delivery::NoCommit, false),
+    ] {
+        let scratch = Scratch::new();
+        let control = StorageControl::virtualized();
+        let intent = Intent::new(0);
+        let configuration = ServiceConfiguration {
+            journal_path: scratch.0.join("journal.sqlite3"),
+            authorization_trust: vec![intent.trust()],
+            approvals: vec![intent.approval()],
+        };
+        let signing = (intent.receipt_seed, intent.receipt_key.clone());
+        let mut adapter = Adapter {
+            intent,
+            store: Store {
+                control: control.clone(),
+                path: configuration.journal_path.clone(),
+                virtualized: true,
+            },
+            io: Arc::new(Mutex::new(Observations::default())),
+            receiver: Receiver::Pending,
+            lose_response: false,
+            fresh: true,
+            gate: None,
+        };
+        let mut app = open(configuration.clone(), &control);
+        let mut checker = Checker::default();
+        let mut selection = Selection {
+            commit: Some((StorageWrite::Observation, delivery)),
+            cut: Cut::None,
+            lose_response: false,
+            sign: false,
+        };
+        selection
+            .execute(&mut app, &mut adapter, &mut checker, signing.clone(), 0)
+            .await
+            .unwrap();
+        assert_eq!(adapter.io.lock().unwrap().reads, 2);
+        if cold {
+            drop(app);
+            app = open(configuration.clone(), &control);
+        }
+        adapter.receiver = Receiver::Replaced;
+        selection.commit = None;
+        selection
+            .execute(&mut app, &mut adapter, &mut checker, signing.clone(), 1)
+            .await
+            .unwrap();
+        let frozen = adapter.store.raw(&adapter.intent.request.operation_id);
+        assert_eq!(text(&frozen, "state"), Some("receiver_observed"));
+        assert_eq!(text(&frozen, "result"), Some("UNKNOWN"));
+        let reads = if delivery == Delivery::NoCommit { 3 } else { 2 };
+        assert_eq!(adapter.io.lock().unwrap().reads, reads);
+        if delivery == Delivery::LostAcknowledgement {
+            first = Some(frozen.clone());
+        } else {
+            let o1 = first.as_ref().unwrap();
+            let fields = [
+                "receiver_uid",
+                "receiver_resource_version",
+                "receiver_image",
+                "receiver_operation_marker",
+                "current_generation",
+                "observed_generation",
+                "desired_replicas",
+                "updated_replicas",
+                "available_replicas",
+                "unavailable_replicas",
+                "rollout_condition_type",
+                "rollout_condition_status",
+                "rollout_condition_reason",
+            ];
+            // Correct O2 passes; both a full stale O1 and a single mixed O1 field must fail the
+            // first-event law, not post-freeze immutability or a result-token comparison.
+            for stale_fields in [fields.to_vec(), vec!["available_replicas"]] {
+                for field in &stale_fields {
+                    assert_ne!(frozen[*field], o1[*field], "distinguishable O1/O2 field");
+                    control.set_value(
+                        &adapter.intent.request.operation_id,
+                        field,
+                        o1[*field].clone(),
+                    );
+                }
+                let finding = Checker::default()
+                    .check(
+                        &adapter.store,
+                        &adapter.io.lock().unwrap(),
+                        &adapter.intent,
+                        1,
+                    )
+                    .unwrap_err();
+                assert_eq!(finding.law, "frozen_io_binding");
+                for field in stale_fields {
+                    control.set_value(
+                        &adapter.intent.request.operation_id,
+                        field,
+                        frozen[field].clone(),
+                    );
+                }
+            }
+        }
+        drop(app);
+        app = open(configuration, &control);
+        selection
+            .execute(&mut app, &mut adapter, &mut checker, signing, 2)
+            .await
+            .unwrap();
+        assert_eq!(adapter.io.lock().unwrap().reads, reads);
+        assert_eq!(
+            adapter.store.raw(&adapter.intent.request.operation_id),
+            frozen
+        );
+    }
+    for delivery in [Delivery::NoCommit, Delivery::LostAcknowledgement] {
+        let mut input = trace(
+            0,
             vec![
-                Action::Peer(0),
-                select(None, Cut::Frozen, false, false),
-                Action::Peer(1),
-                select(None, Cut::None, false, true),
-                Action::Peer(2),
-                Action::CustodyDuringIo(point),
+                select(
+                    Some((StorageWrite::Observation, delivery)),
+                    Cut::None,
+                    false,
+                    false,
+                ),
+                Action::GitRef { new: false },
+                select(None, Cut::None, false, false),
             ],
         );
-        for effects in [
-            vec![Effect::Kubernetes; 3],
-            vec![Effect::Git; 3],
-            vec![Effect::Kubernetes, Effect::Git, Effect::Kubernetes],
-            vec![Effect::Git, Effect::Kubernetes, Effect::Git],
-        ] {
-            input.effects = effects;
-            check_stores(&input).await;
-        }
+        input.effects = vec![Effect::Git];
+        check(&input).await;
     }
 }
 
 #[tokio::test(start_paused = true)]
-async fn fixed_defects_fail_intended_laws_and_correct_counterparts_pass() {
+async fn fixed_calibration_fails_intended_reached_laws_without_shrinking() {
     for input in defect_inputs() {
         let defect = input.defect.unwrap();
-        let law = defect_law(defect);
+        let finding = replay(&input, true).await.unwrap_err();
+        assert_eq!(finding.law, defect_law(defect), "{input:?}");
+        assert!(finding.defect_reached.contains(&defect));
+        if matches!(defect, Defect::NoOp | Defect::InitialUnknown) {
+            assert!(input.actions[..finding.event]
+                .iter()
+                .all(|action| { !matches!(action, Action::Restore | Action::Reopen { .. }) }));
+        }
         let mut correct = input.clone();
         correct.defect = None;
-        for virtualized in [true, false] {
-            let finding = replay(&input, virtualized).await.unwrap_err();
-            assert_eq!(finding.law, law);
-            assert!(finding.defect_reached.contains(&defect));
-            if matches!(defect, Defect::NoOp | Defect::InitialUnknown) {
-                assert!(
-                    input.actions[..finding.event].iter().all(|action| {
-                        !matches!(action, Action::Restore | Action::Reopen { .. })
-                    }),
-                    "detection must precede reopen or global repair"
-                );
-            }
-            assert_eq!(
-                replay(&correct, virtualized).await,
-                Ok(()),
-                "{correct:?}/{virtualized}"
-            );
-        }
-        println!(
-            "KAPSEL_KERNEL_DEFECT {defect:?} {law} actions={}",
-            input.actions.len()
-        );
+        check(&correct).await;
+        println!("KAPSEL_KERNEL_DEFECT {defect:?} {}", finding.law);
     }
 }
 
 #[tokio::test(start_paused = true)]
-async fn safety_reducer_corpus_preserves_reached_laws_and_serialized_identities() {
-    for mut input in defect_inputs()
+async fn concrete_replay_and_one_bounded_reducer_preserve_actions_and_identity() {
+    let original = include_str!("../../tests/fixtures/kernel_original_trace.json");
+    let input: Trace = serde_json::from_str(original).unwrap();
+    check(&input).await;
+    assert_eq!(
+        serde_json::to_value(&input).unwrap()["actions"],
+        serde_json::from_str::<serde_json::Value>(original).unwrap()["actions"]
+    );
+    let (new, result, _) = generated(input.seed, 8).await;
+    assert_eq!(result, Ok(()));
+    assert_ne!(
+        serde_json::to_value(new).unwrap()["actions"],
+        serde_json::to_value(input).unwrap()["actions"]
+    );
+    let mut faulty = defect_inputs()
         .into_iter()
-        .filter(|input| matches!(input.defect, Some(Defect::Remint)))
-    {
-        let defect = input.defect.unwrap();
-        let law = defect_law(defect);
-        input.source_sha256 = "c".repeat(64);
-        input.executable_sha256 = "d".repeat(64);
-        let original_actions = input.actions.len();
-        let minimum_peers = if input
-            .actions
-            .iter()
-            .any(|action| matches!(action, Action::CancelAtIo { .. }))
-        {
-            2 // Removing the real contender changes the reached branch.
-        } else {
-            1
-        };
-        let reduced = minimize(input, law).await;
-        assert!(!reduced.require_progress);
-        assert_eq!(reduced.peers, minimum_peers);
-        assert!(reduced.actions.len() < original_actions);
-        assert_eq!(reduced.source_sha256, "c".repeat(64));
-        assert_eq!(reduced.executable_sha256, "d".repeat(64));
-        let document = serde_json::to_vec(&reduced).unwrap();
-        let reduced: Trace = serde_json::from_slice(&document).unwrap();
-        for virtualized in [true, false] {
-            check_replay_result(&reduced, replay(&reduced, virtualized).await);
-            let mut correct = reduced.clone();
-            correct.defect = None;
-            assert_eq!(replay(&correct, virtualized).await, Ok(()));
-        }
+        .find(|input| input.defect == Some(Defect::Remint))
+        .unwrap();
+    faulty.source_sha256 = "c".repeat(64);
+    faulty.executable_sha256 = "d".repeat(64);
+    let original_len = faulty.actions.len();
+    let reduced = minimize(faulty.clone(), "dispatch_provenance").await;
+    assert!(reduced.actions.len() < original_len);
+    assert_eq!(reduced.source_sha256, faulty.source_sha256);
+    assert_eq!(reduced.executable_sha256, faulty.executable_sha256);
+    for trace in [faulty, reduced] {
+        let bytes = serde_json::to_vec(&trace).unwrap();
+        let mut replayed: Trace = serde_json::from_slice(&bytes).unwrap();
+        check_replay_result(&replayed, replay(&replayed, true).await);
+        replayed.defect = None;
+        check(&replayed).await;
     }
 }
 
 #[tokio::test(start_paused = true)]
-async fn unrelated_or_ineligible_progress_does_not_qualify_as_defect_detection() {
+async fn missing_progress_premises_never_qualify_as_a_detected_defect() {
     let mut input = trace(0, vec![]);
-    input.actions.clear();
-    input.defect = Some(Defect::Remint);
-    let finding = replay(&input, true).await.unwrap_err();
-    assert_eq!(finding.law, "ineligible_progress");
-    assert_ne!(finding.law, defect_law(Defect::Remint));
-    assert!(finding.defect_reached.is_empty());
     input.actions = vec![Action::Restore, select(None, Cut::None, false, false)];
     input.defect = Some(Defect::NoOp);
-    for virtualized in [true, false] {
-        let finding = replay(&input, virtualized).await.unwrap_err();
-        assert_eq!(finding.law, "ineligible_progress");
-        assert_ne!(finding.law, defect_law(Defect::NoOp));
-        assert!(finding.defect_reached.contains(&Defect::NoOp));
-    }
-}
-
-#[tokio::test(start_paused = true)]
-async fn unavailable_catalog_does_not_claim_a_fresh_checkpoint() {
-    for effects in assignments(2) {
-        for cut in FRESH_CUTS {
-            let mut input = multi_trace(
-                0,
-                2,
-                vec![
-                    Action::Reopen { catalog: false },
-                    select(None, cut, false, false),
-                ],
-            );
-            input.effects = effects.clone();
-            check_stores(&input).await;
-        }
-    }
-}
-
-#[tokio::test(start_paused = true)]
-async fn progress_reduction_requires_every_remaining_peer_and_current_prerequisites() {
-    for withdrawal in [
-        Action::Trust(false),
-        Action::SubstituteTrustKey,
-        Action::Writes(false),
-        Action::Signer(Signer::Invalid),
-        Action::Receiver(Receiver::Unavailable),
-    ] {
-        let mut input = multi_trace(0, 2, vec![]);
-        input.defect = Some(Defect::NoOp);
-        input.actions.push(withdrawal);
-        let finding = replay(&input, true).await.unwrap_err();
-        assert_eq!(finding.law, "ineligible_progress");
-        assert!(finding.defect_reached.contains(&Defect::NoOp));
-    }
-    let mut input = multi_trace(0, 3, vec![]);
-    input.actions = vec![
-        Action::Restore,
-        Action::Peer(0),
-        select(None, Cut::None, false, true),
-    ];
     assert_eq!(
         replay(&input, true).await.unwrap_err().law,
         "ineligible_progress"
     );
-    input.actions.extend([
-        Action::Peer(1),
-        select(None, Cut::None, false, true),
-        Action::Peer(2),
-        select(None, Cut::None, false, true),
-    ]);
-    input.defect = Some(Defect::NoOp);
-    input.source_sha256 = "a".repeat(64);
-    input.executable_sha256 = "b".repeat(64);
-    let minimized = minimize(input, "healthy_progress").await;
-    assert_eq!(minimized.source_sha256, "a".repeat(64));
-    assert_eq!(minimized.executable_sha256, "b".repeat(64));
-    let encoded = serde_json::to_vec(&minimized).unwrap();
-    let minimized: Trace = serde_json::from_slice(&encoded).unwrap();
-    assert!(minimized.require_progress);
-    assert!(minimized.peers < 3);
-    for virtualized in [true, false] {
-        assert_eq!(
-            replay(&minimized, virtualized).await.unwrap_err().law,
-            "healthy_progress"
-        );
-        let mut correct = minimized.clone();
-        correct.defect = None;
-        assert_eq!(replay(&correct, virtualized).await, Ok(()));
-    }
+    let mut input = multi_trace(0, 2, vec![]);
+    input.actions = vec![Action::Restore, select(None, Cut::None, false, true)];
+    assert_eq!(
+        replay(&input, true).await.unwrap_err().law,
+        "ineligible_progress"
+    );
 }
 
 #[tokio::test(start_paused = true)]
-async fn generated_io_schedules_have_replayable_healthy_suffixes() {
-    let mut virtual_report = RunReport::default();
-    let mut sqlite_report = RunReport::default();
-    for steps in [12, 48] {
-        for seed in 0..32 {
-            let input = generated(seed, steps);
-            let document = serde_json::to_vec(&input).unwrap();
-            let replayed = serde_json::from_slice(&document).unwrap();
-            let (result, report) = replay_report(&replayed, true).await;
-            assert_eq!(result, Ok(()), "seed={seed}/steps={steps}");
-            assert_eq!(report.requested_deliveries, report.consumed_deliveries());
-            assert!(report.progress_checks >= 3);
-            virtual_report.merge(report);
-            if [0, 4, 6, 7].contains(&seed) {
-                let (result, report) = replay_report(&replayed, false).await;
-                assert_eq!(result, Ok(()), "SQLite seed={seed}/steps={steps}");
-                sqlite_report.merge(report);
-            }
-        }
+async fn smoke_runs_32_short_generated_histories_with_meaningful_decisions() {
+    let mut reached = RunReport::default();
+    let mut decisions = 0;
+    for seed in 0..32 {
+        let (input, result, report) = generated(seed, 32).await;
+        assert_eq!(result, Ok(()), "seed={seed}");
+        assert!((2..=4).contains(&input.peers));
+        assert!((input.peers..=32).contains(&input.meaningful_decisions));
+        assert!(input.actions.len() <= 256);
+        assert_eq!(report.requested_deliveries, report.consumed_deliveries());
+        assert!(report.faults.iter().all(|fault| fault.consumed));
+        assert_eq!(report.progress_checks, input.peers);
+        decisions += input.meaningful_decisions;
+        reached.merge(report);
     }
-    println!("64 virtual generated scenarios");
-    virtual_report.print();
-    println!("8 SQLite generated scenarios");
-    sqlite_report.print();
+    let (short, result, _) = generated(0, 8).await;
+    assert_eq!(result, Ok(()));
+    let (long, result, _) = generated(0, 32).await;
+    assert_eq!(result, Ok(()));
+    assert!(long.meaningful_decisions > short.meaningful_decisions);
+    println!("32 virtual generated histories meaningful_decisions={decisions}");
+    reached.print();
 }

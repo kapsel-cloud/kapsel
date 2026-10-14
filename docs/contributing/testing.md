@@ -206,8 +206,9 @@ service application and shared journal. Its private test-only owners are:
 | `world.rs`       | Concrete peers, original material and raw record-store fixtures                |
 | `run.rs`         | Real selections, cancellation, reopen and operating faults                     |
 | `laws.rs`        | Independent original-intent, I/O, retained-fact, byte and progress comparisons |
-| `cases.rs`       | Deterministic witnesses and reached defect controls on both stores             |
-| `exploration.rs` | Generation, minimization, exclusive persistence and replay                     |
+| `cases.rs`       | Virtual delivery cases, compact temporal witnesses and fixed calibration       |
+| `generation.rs`  | Short choices from actually reached unfinished records                         |
+| `exploration.rs` | Minimization, concrete persistence, count/duration completion and replay       |
 
 `src/test_scratch.rs` owns private temporary-directory custody and cleanup for journal tests and
 simulation. Journal tests do not depend on the simulator. The bounded Python job selects exactly
@@ -215,65 +216,60 @@ simulation. Journal tests do not depend on the simulator. The bounded Python job
 `kernel_simulation_tests::cases::` prefix.
 
 Each identity has distinct intent, target, authority and receipt signing material. Every event
-checks every peer's raw facts and independently counted receiver I/O. Every selection also requires
-all nonselected peers' complete rows and I/O counters to remain unchanged, including the first
-receipt commitment. Generated four-identity schedules use Kubernetes-only, Git-only and mixed
-assignments. Short directed prefixes reach delivery boundaries, suspended interference or joined
-response/observation/receipt faults. A fourth identity retains fresh work for bounded unguided
-selections. Each scenario then ends instead of extending a terminal-selection tail. The default
-workload remains 64 virtual and 8 SQLite scenarios. They retain receiver changes, catalog removal,
-trust withdrawal, invalid selections and terminal reselection. Conflicting catalog replacement must
-fail application construction without changing any peer's retained facts or receiver counts.
-Withdrawn trust must permit neither I/O nor retained fact changes. Substituting a different public
-key under the original key ID must disclose neither targets nor receipt bytes. After raw-history and
-receiver laws pass, every peer checks authenticated access, projection forwarding and original
-receipt readiness/bytes. Local journal and public-read properties check complete stored status,
-admitted phase and original targets against independent expectations. Unadmitted identities must
-return absence without catalog target disclosure. Direct tests in
-`application::service::disposition` own the complete status/observation partition, including
-operator remediation and terminal precedence. History reads bind unknown and active observations
-through both public projection methods without repeating that partition. Unknown process knowledge
-never supplies a historical stop cause, including after reopen. Both point reads and authenticated
-SQLite history entries agree on access failures and forward the same projections. Real SQLite
-additionally checks ordered history identities and authenticated access. Unaffected peers remain
-readable. Reads must change neither retained rows, receiver counts nor durable-write counts. These
-traces contain at most four identities; full-page pagination and wire/process readers retain their
-direct owners. Restoring trust does not substitute current catalog authority for history. Signer
-rotation before receipt commitment may choose the new signer. Rotation after commitment must return
-the original bytes and signer. Invalid signing material at frozen history must change no facts or
-receiver counts. Production journal policy validates authority, transitions and frozen facts. Its
-private record-I/O owner reads complete bounded rows from either typed table and conditionally
-commits against the original row. SQLite updates only changed columns. The test-only virtual store
-implements atomic records, not lifecycle policy. Neither backend selection nor fault controls are
-caller inputs.
+checks all peers' raw facts and independently counted receiver I/O. A selection must preserve every
+nonselected peer's complete record and counters, including its first receipt commitment. Reads must
+preserve records, receiver counters and durable-write counts. Startup may create schema or recover
+rollback; it must not select work, contact receivers or sign evidence.
 
-The slice checks original intent, confirmed dispatch provenance, initial classification, complete
-first receiver-fact binding, original receipt authority/signer, frozen no-I/O continuation, original
-receipt bytes and healthy eligible progress. Local journal and public-read properties own complete
-SQL-to-statement/status/targets projections; the history monitor does not reconstruct them. The
-delivery matrix enumerates all seven Kubernetes and six Git durable writes, including rejection,
-under confirmed, no-commit and lost-acknowledgement outcomes. No-commit and
-committed-with-lost-acknowledgement return the same error. Each targeted selection must consume its
-requested delivery and match independent raw fields and receiver call counts. A paired Kubernetes
-witness uses distinct Pending O1 and Replaced O2 observations, both UNKNOWN. No-commit must read and
-freeze complete O2 facts; lost acknowledgement must retain complete O1 without another read. Warm
-and reopened retries run on both stores. Another reopen preserves the complete frozen row and read
-count. Stale-preflight rejection remains terminal without mutation after lost acknowledgement,
-repair and reopen. Git's externally established desired ref cannot acknowledge an unsent attempt.
-Receiver response loss is separate. Both stores run these laws; named physical columns and executed
-write plans provide independent SQLite evidence.
+The deterministic workload has 39 virtual delivery cases, compact interruption/regression witnesses
+and 32 fixed generated histories. Generation uses two to four identities and at most 32 meaningful
+decisions. Small recipes reach preflight, attempted, observation and completion boundaries. Later
+choices use actual unfinished records, not predicted transitions. Choices change material, refuse
+writes, reopen, challenge catalog authority or explicitly advance work. Temporary faults are
+repaired within their batches. Eligible selections then assert warm progress before global repair or
+reopen. Generation stops when no unfinished identity remains; additional requested steps never
+append terminal no-op tails.
+
+Conflicting catalogs must fail without changing any retained facts or receiver counts. Withdrawn or
+substituted original trust permits neither disclosure nor advancement, but does not block a trusted
+peer. Catalog removal cannot appoint new authority. Signing material may rotate before first
+completion. Later rotation must preserve committed receipt bytes and signer identity.
+
+Histories bind authenticated access, original intent, I/O events and immutable evidence over time.
+Local journal and public-read properties own complete SQL-to-statement/status/targets mappings.
+Disposition's direct table owns the status/observation partition. Real SQLite owns enumeration,
+full-page pagination and actual atomic transaction delivery. Histories use virtual atomic records;
+one application-to-SQLite-to-reopen composition remains per effect. Generated histories do not run
+on SQLite. Neither backend selection nor fault controls are caller inputs.
+
+The history monitor checks original authority/global identity, confirmed admission, fresh one-use
+dispatch, no strengthening from failure, first freeze, immutable receipt bytes, read/peer isolation,
+post-I/O custody and conditional progress. Expected results do not call production classifiers. The
+39 virtual cases cover seven Kubernetes and six Git writes under Confirmed, NoCommit and
+LostAcknowledgement. Each targeted delivery must be consumed for the intended operation. The local
+39-case SQLite bridge independently binds complete rows and transactions; it has no history suffix
+product.
+
+The first-freeze witness returns Pending O1, refuses its Observation write, then returns a
+field-distinct Replaced O2 with the same UNKNOWN classification. The successful freeze must bind
+every O2 field. With LostAcknowledgement, O1 is already frozen: resume retains O1 without another
+read. Correct code passes; a full stale O1 or a single mixed O1 field fails `frozen_io_binding`. Git
+retains the equivalent returned-ref binding and durably retained acknowledgement independently. An
+Updated response whose Response write was NoCommit before restart remains UNKNOWN, even when the
+current ref is B. A→B→A cannot authorize another send.
 
 `KAPSEL_KERNEL_REACHED` reports requested and consumed deliveries, checkpoint cuts and response
-losses, plus write, selection, unchanged-selection and explicit progress-check counts.
-`KAPSEL_KERNEL_INTERACTIONS` lists reached effect/pre-write-phase/write/delivery tuples. A requested
-write that is not consumed fails `fault_not_reached`, even when another fault shadows it. Unguided
-checkpoint selections may deliberately be ineligible; their unconsumed cuts remain visible. Retained
-failure reports include reached write events and requested-versus-consumed counts.
+losses, plus write, selection, unchanged-selection and explicit progress-check counts. Finding
+reports also bind each intended and consumed fault to its operation ID, effect, write or suspended
+I/O stage. `KAPSEL_KERNEL_INTERACTIONS` lists reached effect/pre-write-phase/write/delivery tuples.
+A requested write that is not consumed fails `fault_not_reached`, even when another fault shadows
+it. Mandatory positioning and suspended-I/O recipes must reach their intended cuts. Legacy concrete
+replays can contain ineligible cuts; their unconsumed requests remain visible. Retained failure
+reports include reached write events and requested-versus-consumed counts.
 
-Git checks exact original acknowledgement independently of the frozen ref. A seeded control that
-infers an acknowledgement from externally established B must fail `git_acknowledgement_binding`,
-including after an unsent attempt. Its fixed input must fail on both stores and pass without the
-control. The shared stale-record control also runs against Git rows.
+Git's inferred-acknowledgement control must fail `git_acknowledgement_binding` after an unsent
+attempt and externally established B. Its fixed virtual input passes without the control. Local
+atomic-record tests independently own stale/foreign replacement on both stores.
 
 Seeded remint, wrong-initial-result, no-op, wrong-signer, accepted catalog conflict and wrong-peer
 lookup controls must violate their intended temporal law and report the reached faulty branch.
@@ -283,19 +279,19 @@ stores. It also binds cross-table identity and exact/max+1 read limits. Local ma
 detect replica/generation/null and coordinated writer/reader swaps. They have no temporal-fault enum
 or serialization registration. Public status/target properties and the disposition partition replace
 the simulator's projection-swap controls and exclusive traces. Default temporal controls do not run
-shrink searches. A separate safety/progress reducer corpus checks peer/action reduction,
-serialization, reached defects and unchanged source/executable identities. The history bindings and
-direct disposition partition replace synthetic history-entry matrices and procedural application
-journeys. Local next-action/owner and error-to-stop classification checks remain. Compact
-application checks own missing-material admission, callback-time grant visibility and worker
-exclusion, full-page pagination, cold validation and SQLite file-byte preservation.
-Configured-client tests own actual success/ambiguous-response request counts and shared-target
-preflight conflict. These read laws do not establish physical job ownership, outcome-cache
-invalidation or socket rendering. Wrong-peer lookup deliberately misroutes the selected identity
-before grant binding; a wrong lower-layer row alone is refused by the existing identity guard. An
-unrelated bounded refusal does not qualify as detection. Generated schedules retain concrete
-actions, not just seeds. Older documents retain their original source/executable identities and
-replay their serialized actions without invoking the changed generator.
+shrink searches. One bounded reducer regression checks peer/action reduction, exact original/reduced
+replay, reached defects and unchanged source/executable identities. The history bindings and direct
+disposition partition replace synthetic history-entry matrices and procedural application journeys.
+Local next-action/owner and error-to-stop classification checks remain. Compact application checks
+own missing-material admission, callback-time grant visibility and worker exclusion, full-page
+pagination, cold validation and SQLite file-byte preservation. Configured-client tests own actual
+success/ambiguous-response request counts and shared-target preflight conflict. These read laws do
+not establish physical job ownership, outcome-cache invalidation or socket rendering. Wrong-peer
+lookup deliberately misroutes the selected identity before grant binding; a wrong lower-layer row
+alone is refused by the existing identity guard. An unrelated bounded refusal does not qualify as
+detection. Generated schedules retain concrete actions, not just seeds. Older documents retain their
+original source/executable identities and replay their serialized actions without invoking the
+changed generator.
 
 `AssertProgress` requires terminal evidence immediately after eligible explicit selection. Warm
 receiver, write and signer repairs must pass this assertion before the final reopen. Separate cold
@@ -306,7 +302,7 @@ while a physical worker remains parked. Default no-op controls for both effects 
 `healthy_progress`; always-UNKNOWN Kubernetes classification fails `initial_result` before reopen.
 The final whole-trace progress check still requires current eligibility for every peer. Minimized
 progress witnesses preserve that requirement. Minimized safety witnesses need not finish the
-operation; correct code must pass those same prefixes on both stores.
+operation; correct code must pass those same virtual prefixes.
 
 Run the deterministic slice:
 
@@ -321,40 +317,24 @@ send, recovery freezes honest `UNKNOWN`, and later selection retains original by
 competing-claimants check still owns stale Authorized-snapshot refusal; foreign snapshots and actual
 cancellation retain their local owners.
 
-`suspended_io_rechecks_original_custody_before_advancing_any_peer` suspends real selection at
-preflight, mutation and observation. While the future is pending, it replaces retained grant bytes,
-then releases the receiver. The continuation must refuse without changing the attacked record or
-performing further I/O. The checker restores only the externally altered grant bytes before same-ID
-recovery. Frozen and finalized neighbours remain unchanged. Both effects run this law on both
-stores, with reached ignored-custody defects and minimized replay. These checks replace the local
-changed-grant-during-apply matrix; they do not replace filesystem/process custody.
+`compact_interruptions_cover_distinct_effect_and_io_boundaries` keeps confirmed-but-unsent
+permission, response loss, returned-but-uncommitted observation and frozen-but-unsigned evidence.
+Each effect reaches preflight, mutation and observation cancellation with a mixed contender.
+Suspended custody replacement reaches the same distinct stages. Returned facts cannot attach to
+substituted grant bytes; externally performed work cannot become NOT_ATTEMPTED. The contender must
+change neither identity's facts nor receiver counts. Dropping the actual selection future releases
+the worker. These checks do not qualify physical blocking-job retirement or filesystem custody.
 
-`replacement_catalog_and_rotated_material_preserve_retained_history` checks admitted, authorized,
-attempted, frozen and finalized history across catalog conflicts and signer changes. Receipt
-no-commit leaves all receipt columns absent in `receiver_observed`; acknowledgement loss leaves all
-three committed together in `finalized`. The all-peer checker binds stored bytes, digest and key
-identity to the completion material, then inspects returned bytes under that key. Together with
-atomic-delivery laws, this replaces the deterministic receipt-commit/rotation matrix. Actual
-process-exit, configured-client HTTP and native receipt owners remain separate.
+Named regressions retain Git ref/acknowledgement distinctions, stale rejection acknowledgement loss,
+catalog removal/conflict, withdrawn/substituted trust, receipt loss and signer rotation. Separate
+warm and cold progress checks keep an unrelated peer unavailable and untrusted. The 39 virtual cases
+own write-delivery continuation. There is no fresh-cut/outcome/assignment/backend product,
+contention-order permutation matrix or repeated rotated-material lifecycle matrix.
 
-Fresh-checkpoint enumeration runs before any cancellation can consume the attempt. Both stores and
-effects check all seven interruption windows against healthy, failed, pending, replaced, stale,
-wrong-generation and unavailable receivers. Eligible fresh selections must reach the selected
-checkpoint, with matching returned error, durable writes and exact receiver call counts. Recovery's
-`ReceiverRead` interruption remains fresh-only.
-
-Suspended service selections contend with the same or another identity at preflight, mutation and
-observation. The contender must acknowledge only existing responsibility or busy refusal, changing
-neither peer's facts nor receiver counts. Dropping the real selection future releases the worker;
-same-ID continuation still cannot resend. Retained schedules enumerate the six orders of
-cancellation, conflicting catalog construction and reopen. Physical blocking-job retirement remains
-a separate runtime owner.
-
-Eight deliberate recovery joins use those same actions and all-peer laws under Kubernetes-only,
-Git-only and mixed assignments. SQLite query-only refusal and virtual no-commit refusal preserve
-previous facts through reopen and same-ID repair. Progress findings require current healthy
-prerequisites and an eligible selection for every remaining identity. Reduction can remove
-identities, actions and selected values only while reproducing the same law and reached defect.
+A new finding retains exact original actions before minimization. Generation persists each chosen
+batch before executing it, so unknown crashes also leave their concrete input. Reduced input is
+additional evidence, never a replacement. Reduction must preserve the same law, reached defect and
+required premises.
 
 For retained local exploration, select a new private directory outside the checkout:
 
@@ -364,13 +344,10 @@ cargo test --locked -p kapsel --lib \
   kernel_simulation_tests::kernel_trace_exploration_or_replay -- --ignored --exact --nocapture
 ```
 
-Set `KAPSEL_KERNEL_DELIBERATE=1` to retain the 24 deliberate inputs for direct replay. Set
-`KAPSEL_KERNEL_DEFECTS=1` to retain the fixed temporal-control inputs and their minimized findings.
-Catalog-conflict, wrong-signer, stale-trust and ignored-custody controls include Kubernetes, Git and
-mixed assignments. The atomic-record binding control has its separate deterministic owner. Each
-document is created exclusively before execution and records source-content and executable digests.
-These digests are not build attestations. Replay a retained document without regenerating its
-schedule:
+Each job creates a new private evidence directory and records source-content and executable digests.
+These digests are not build attestations. Fixed temporal controls run in ordinary checks; local
+atomic-record binding calibration has its separate deterministic owner. Replay a retained document
+without regenerating its schedule:
 
 ```sh
 KAPSEL_KERNEL_REPLAY=/absolute/retained/finding-0.json cargo test --locked -p kapsel --lib \
@@ -384,20 +361,21 @@ installed-artifact evidence. Those owners remain separate.
 
 ## Lifecycle exploration
 
-The [atomic-record simulator](#atomic-record-io-simulation) owns fresh interruption enumeration,
-suspended service contention, deliberate recovery joins and generated schedules. It exercises one
-real application and shared journal, not a predicted lifecycle implementation. Every event checks
-all peers' original authority, raw history and independently counted I/O, including peers whose
-external trust is unavailable. Application reads must still refuse disclosure under unavailable
-original trust.
+The [atomic-record simulator](#atomic-record-io-simulation) owns compact interruption witnesses,
+suspended service contention and short generated schedules. It exercises one real application and
+shared journal, not a predicted lifecycle implementation. Every event checks all peers' original
+authority, raw history and independently counted I/O, including peers whose external trust is
+unavailable. Application reads must still refuse disclosure under unavailable original trust.
 
 The independent `simulation` job uses this owner and accepts dirty development source. It reuses
 normal build output and retains exact source and executable bytes in a new output directory. See
-[bounded exploration](qualification.md#background-sweep-and-retained-evidence). Each shard must
-complete its selected cases and retain their traces; a passing generated trace is not replayed
-again. Failures retain reached-event details and minimized inputs, then replay both original and
-reduced inputs with the retained binary. Rebuilding is a separate candidate comparison, not
-reproduction of that executable identity. Previous findings never gate a new job.
+[bounded exploration](qualification.md#background-sweep-and-retained-evidence). Count-mode shards
+must complete their selected cases and retain their traces. Duration mode completes between complete
+histories after useful work when its monotonic budget expires. Forced watchdog termination is
+INCOMPLETE, never orderly completion. A passing generated trace is not replayed again. Failures
+retain reached-event details and minimized inputs, then replay both original and reduced inputs with
+the retained binary. Rebuilding is a separate candidate comparison, not reproduction of that
+executable identity. Previous findings never gate a new job.
 
 The runtime's `enumerated_lifecycle_physical_retirement_barriers` separately exercises tracked jobs.
 It parks work before or after admission acknowledgement, disconnects the caller and aborts the
@@ -406,15 +384,15 @@ until physical release. This does not replace Linux socket/process or native-ser
 
 ### Consolidated crash-matrix obligations
 
-Fresh enumeration and deliberate joins jointly establish these obligations. Checkpoint reach alone
+Compact interruptions and named regressions establish these obligations. Checkpoint reach alone
 cannot establish interaction equivalence.
 
 | Window                                    | Simulator obligation                                                                                                |
 | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `TargetObserved`                          | `BeforeAttempt`: no first send; safe retry under original authority before later failed observation                 |
+| `TargetObserved`                          | `BeforeAttempt`: no first send; explicit same-ID preflight continues under original authority                       |
 | `ApplyStartedCommitted`                   | `Unsent`: zero original sends; observation-only recovery, including present Git B without acknowledgement           |
 | `AttemptCommitAcknowledgementLost`        | Lost confirmation creates no dispatch permission; receiver replacement cannot create success                        |
-| `ApplyReturned` / `ApplyOutcomeCommitted` | Response-loss and recorded-response cuts join unavailable or wrong-generation recovery                              |
+| `ApplyReturned` / `ApplyOutcomeCommitted` | Response loss and committed-response positioning retain attempted state without another send                        |
 | `ReceiverRead`                            | `ObservationLost`: recovery freezes its current observation; the interruption is fresh-only                         |
 | `ReceiverObservedCommitted`               | `Frozen`: receiver replacement and trust withdrawal add no observation; completion retains original facts and bytes |
 
@@ -429,19 +407,19 @@ inert `target_read_failures` checks remain in gateway lifecycle/storage tests.
 | Obligation                                                      | Replacement or retained owner                                                                                                                                                            |
 | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Transient target deferral preserves authority and sends nothing | Unavailable-receiver actions and restored progress; bounded read-budget adapter checks remain                                                                                            |
-| Seven fresh windows recover without resend                      | Fresh-checkpoint enumeration and suspended cancellation, with reached remint controls                                                                                                    |
+| Seven fresh windows recover without resend                      | 39 virtual delivery cases and compact interruption/cancellation witnesses, with a reached remint control                                                                                 |
 | Frozen history survives reopen and changed receiver facts       | All-peer raw-fact and no-I/O laws; Git observation substitution changes the ref without changing acknowledgement/result; receipt rewrite replaces bytes and digest under withdrawn trust |
 | Receipt loss and signer rotation preserve original evidence     | Atomic delivery and material-replacement laws; actual process-exit checkpoints remain separate                                                                                           |
 | Shared history retains facts and completion headroom            | One shared simulator journal; full-capacity/layout and storage-failure owners remain                                                                                                     |
 | Seed/shard accounting and evidence custody                      | Independent bounded jobs, exclusive full-input retention, exact completion counts and original-binary replay of findings                                                                 |
 
 The simulator also replaces the procedural authorized-reopen, writer/decoder phase, target-read
-interruption and post-apply recovery traces in gateway `lifecycle` and `recovery`. Fresh
-checkpoints, atomic response/receipt delivery and deliberate joins check their durable phases and
-exact I/O; all-peer read laws exercise the production decoder. Snapshot target/receipt binding and
-ambiguous apply recovery use the same original-intent, attempt-binding and receipt-payload laws,
-with remint, wrong-initial-result and original-authority/signer controls. The shared gateway fixture
-retains its independent SQLite attempt check at mutation, without per-scenario capture fields.
+interruption and post-apply recovery traces in gateway `lifecycle` and `recovery`. Compact
+interruptions and atomic response/receipt delivery check their durable phases and exact I/O;
+all-peer read laws exercise the production decoder. Snapshot target/receipt binding and ambiguous
+apply recovery use the same original-intent, attempt-binding and receipt-payload laws, with remint,
+wrong-initial-result and original-authority/signer controls. The shared gateway fixture retains its
+independent SQLite attempt check at mutation, without per-scenario capture fields.
 
 Compact direct checks retain single-field snapshot conflicts, legacy downgrade and the gateway's
 immediate typed apply error. The simulator additionally checks the application's bounded apply stop,

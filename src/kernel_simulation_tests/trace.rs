@@ -104,6 +104,10 @@ pub(super) struct Trace {
     #[serde(default = "default_progress")]
     pub(super) require_progress: bool,
     #[serde(default)]
+    pub(super) requested_steps: usize,
+    #[serde(default)]
+    pub(super) meaningful_decisions: usize,
+    #[serde(default)]
     pub(super) source_sha256: String,
     #[serde(default)]
     pub(super) executable_sha256: String,
@@ -137,6 +141,19 @@ pub(super) struct RunReport {
     pub(super) selections: usize,
     pub(super) no_op_selections: usize,
     pub(super) progress_checks: usize,
+    pub(super) meaningful_decisions: usize,
+    pub(super) faults: Vec<FaultReach>,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct FaultReach {
+    pub(super) operation_id: String,
+    pub(super) effect: Effect,
+    pub(super) write: Option<StorageWrite>,
+    pub(super) cut: Cut,
+    pub(super) io_point: Option<IoPoint>,
+    pub(super) response_loss: bool,
+    pub(super) consumed: bool,
 }
 
 impl RunReport {
@@ -150,6 +167,8 @@ impl RunReport {
         self.selections += other.selections;
         self.no_op_selections += other.no_op_selections;
         self.progress_checks += other.progress_checks;
+        self.meaningful_decisions += other.meaningful_decisions;
+        self.faults.extend(other.faults);
     }
 
     pub(super) fn consumed_deliveries(&self) -> usize {
@@ -169,7 +188,8 @@ impl RunReport {
             .collect::<std::collections::BTreeSet<_>>();
         println!(
             "KAPSEL_KERNEL_REACHED requested={} consumed={} writes={} tuples={} \
-             selections={} no_ops={} progress_checks={} cuts={}/{} response_losses={}/{}",
+             selections={} no_ops={} progress_checks={} choices={} \
+             cuts={}/{} response_losses={}/{}",
             self.requested_deliveries,
             self.consumed_deliveries(),
             self.writes.len(),
@@ -177,6 +197,7 @@ impl RunReport {
             self.selections,
             self.no_op_selections,
             self.progress_checks,
+            self.meaningful_decisions,
             self.consumed_cuts,
             self.requested_cuts,
             self.consumed_response_losses,

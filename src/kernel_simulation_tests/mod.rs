@@ -2,6 +2,7 @@
 
 mod cases;
 mod exploration;
+mod generation;
 mod laws;
 mod run;
 mod trace;

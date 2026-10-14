@@ -376,6 +376,20 @@ def replay_trace(job: Job, command: list[str], path: Path) -> dict | None:
     return None
 
 
+def duration_completion(
+    output: str, seed: int, shards: int, index: int, steps: int, duration_ms: int
+) -> int:
+    prefix = (
+        f"KAPSEL_KERNEL_DURATION_COMPLETED seed={seed} shard={index}/{shards} "
+        rf"cases=([1-9]\d*) steps={steps} duration_ms={duration_ms} elapsed_ms=(\d+)"
+    )
+    matches = list(re.finditer("^" + prefix + "$", output, re.MULTILINE))
+    if len(matches) != 1 or int(matches[0][2]) < duration_ms:
+        raise Incomplete("missing orderly duration completion after useful work")
+    require_test_completion(output, matches[0][0])
+    return int(matches[0][1])
+
+
 def retained_traces(
     directory: Path, seed: int, cases: int, shards: int, index: int, digest: str, source: str
 ) -> None:
@@ -438,6 +452,9 @@ def simulation(job: Job, args: argparse.Namespace, source: str) -> None:
             raise Finding(f"replayed {finding['law']}")
         return
 
+    duration = args.duration
+    if duration and job.deadline - time.monotonic() < duration + 10:
+        raise Incomplete("duration requires ten seconds of watchdog recording/cleanup grace")
     for seed in args.seed:
         environments = []
         for index in range(args.shards):
@@ -448,6 +465,7 @@ def simulation(job: Job, args: argparse.Namespace, source: str) -> None:
                     "KAPSEL_KERNEL_SEED": str(seed),
                     "KAPSEL_KERNEL_CASES": str(args.cases),
                     "KAPSEL_KERNEL_STEPS": str(args.steps),
+                    "KAPSEL_KERNEL_DURATION_MS": str((duration or 0) * 1000),
                     "KAPSEL_KERNEL_SHARDS": str(args.shards),
                     "KAPSEL_KERNEL_SHARD_INDEX": str(index),
                     "KAPSEL_KERNEL_EVIDENCE": str(directory),
@@ -467,7 +485,7 @@ def simulation(job: Job, args: argparse.Namespace, source: str) -> None:
                 case = report.get("case")
                 if (
                     type(case) is not int
-                    or not 0 <= case < args.cases
+                    or not 0 <= case < (10000 * args.shards if duration else args.cases)
                     or report.get("finding") != finding
                 ):
                     raise Incomplete("finding record mismatch") from error
@@ -484,13 +502,20 @@ def simulation(job: Job, args: argparse.Namespace, source: str) -> None:
                         raise Incomplete("retained finding did not reproduce") from error
             raise Finding(finding["law"]) from error
         for index, output in enumerate(outputs):
-            count = len(range(index, args.cases, args.shards))
-            marker = f"KAPSEL_KERNEL_COMPLETED seed={seed} shard={index}/{args.shards} cases={count} steps={args.steps}"
-            require_test_completion(output, marker)
+            if duration:
+                count = duration_completion(
+                    output, seed, args.shards, index, args.steps, duration * 1000
+                )
+                last_case = index + count * args.shards
+            else:
+                count = len(range(index, args.cases, args.shards))
+                marker = f"KAPSEL_KERNEL_COMPLETED seed={seed} shard={index}/{args.shards} cases={count} steps={args.steps}"
+                require_test_completion(output, marker)
+                last_case = args.cases
             retained_traces(
                 job.evidence / f"traces-{seed}-{index}",
                 seed,
-                args.cases,
+                last_case,
                 args.shards,
                 index,
                 digest,
@@ -703,8 +728,15 @@ def main() -> int:
     )
     parser.add_argument("--timeout", type=positive, default=3600)
     parser.add_argument("--seed", type=int, action="append")
-    parser.add_argument("--cases", type=positive, default=1000)
-    parser.add_argument("--steps", type=positive, default=48)
+    workload = parser.add_mutually_exclusive_group()
+    workload.add_argument("--cases", type=positive, default=1000)
+    workload.add_argument("--smoke", action="store_true", help="32 histories, 32 steps, one shard")
+    workload.add_argument(
+        "--duration",
+        type=positive,
+        help="simulation seconds per seed/shard; finish between complete useful histories",
+    )
+    parser.add_argument("--steps", type=positive, default=32)
     parser.add_argument("--shards", type=positive, default=2)
     parser.add_argument(
         "--replay", type=Path, help="exact simulation trace, not a regenerated seed"
@@ -716,12 +748,20 @@ def main() -> int:
     )
     parser.add_argument("--runs", type=positive, default=10000)
     args = parser.parse_args()
+    if args.smoke:
+        if args.mode != "simulation" or args.replay:
+            parser.error("simulation smoke does not accept replay")
+        args.cases, args.steps, args.shards = 32, 32, 1
     if not args.output.is_absolute() or args.output.parent.resolve() != args.output.parent:
         parser.error("output requires an absolute path without symlink components")
     if args.output == ROOT or ROOT in args.output.parents:
         parser.error("retain job output outside the source checkout")
     if args.executable and not args.replay:
         parser.error("an existing executable is only accepted for explicit replay")
+    if args.duration and (args.mode != "simulation" or args.replay or len(args.seed or []) != 1):
+        parser.error("duration requires simulation, one seed and no replay")
+    if args.duration and args.duration + 10 >= args.timeout:
+        parser.error("duration requires more than ten seconds of outer watchdog grace")
     if args.mode == "fuzz" and (not args.corpus or args.replay or args.executable):
         parser.error("fuzz requires --corpus and does not accept simulation replay options")
     bits = 64 if args.mode == "simulation" else 32
@@ -732,9 +772,9 @@ def main() -> int:
     if args.mode == "fuzz" and len(args.seed) != 1:
         parser.error("fuzz requires one seed")
     if not (
-        args.cases <= 10000 and 8 <= args.steps <= 48 and 1 <= args.shards <= min(128, args.cases)
+        args.cases <= 10000 and 8 <= args.steps <= 32 and 1 <= args.shards <= min(128, args.cases)
     ):
-        parser.error("simulation requires <=10000 cases, 8..48 steps and 1..128 nonempty shards")
+        parser.error("simulation requires <=10000 cases, 8..32 steps and 1..128 nonempty shards")
     os.umask(0o077)
     args.output.mkdir(mode=0o700)
     print(f"evidence: {args.output}", flush=True)
@@ -775,7 +815,7 @@ def main() -> int:
                 raise Incomplete("source changed during build/execution")
             seal_evidence(job)
         job.checkpoint()
-        result["status"], code = "PASSED", 0
+        result["status"], code = "COMPLETED", 0
     except Finding as error:
         result.update(status="FINDING", error=str(error))
         code = 1

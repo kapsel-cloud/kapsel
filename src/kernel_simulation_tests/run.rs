@@ -10,7 +10,7 @@ use ed25519_dalek::SigningKey;
 use rusqlite::types::Value;
 use tokio::sync::Notify;
 
-use super::{laws::*, trace::*, world::*};
+use super::{generation::Generation, laws::*, trace::*, world::*};
 use crate::{
     application::{
         ExecutionCondition, ServiceAdmission, ServiceApplication, ServiceConfiguration,
@@ -41,7 +41,27 @@ pub(super) async fn replay_report(trace: &Trace, virtualized: bool) -> (Checked,
         StorageControl::default()
     };
     let mut report = RunReport::default();
-    let result = drive(trace, virtualized, control.clone(), &mut report).await;
+    let result = drive(
+        &mut trace.clone(),
+        virtualized,
+        control.clone(),
+        &mut report,
+        None,
+    )
+    .await;
+    report.writes = control.events();
+    report.consumed_cuts = control.consumed_cuts();
+    (result, report)
+}
+
+pub(super) async fn generate(
+    input: &mut Trace,
+    generation: &mut Generation,
+) -> (Checked, RunReport) {
+    let control = StorageControl::virtualized();
+    let mut report = RunReport::default();
+    let result = drive(input, true, control.clone(), &mut report, Some(generation)).await;
+    report.meaningful_decisions = input.meaningful_decisions;
     report.writes = control.events();
     report.consumed_cuts = control.consumed_cuts();
     (result, report)
@@ -52,10 +72,11 @@ pub(super) async fn replay_report(trace: &Trace, virtualized: bool) -> (Checked,
     reason = "keep schedule execution, all-peer laws and progress prerequisites in one owner"
 )]
 async fn drive(
-    trace: &Trace,
+    trace: &mut Trace,
     virtualized: bool,
     control: StorageControl,
     report: &mut RunReport,
+    mut generation: Option<&mut Generation>,
 ) -> Checked {
     let scratch = Scratch::new();
     if let Some(defect) = trace.defect {
@@ -126,8 +147,19 @@ async fn drive(
     let mut selected = 0;
     let mut writing = true;
     let mut trusted = vec![true; peers.len()];
-    for (event, action) in trace.actions.iter().enumerate() {
-        match *action {
+    let mut event = 0;
+    loop {
+        if event == trace.actions.len() {
+            let snapshots = peers.iter().map(Peer::snapshot).collect::<Vec<_>>();
+            if !generation
+                .as_mut()
+                .is_some_and(|generation| generation.extend(trace, &snapshots))
+            {
+                break;
+            }
+        }
+        let action = trace.actions[event].clone();
+        match action {
             Action::Select(selection) => {
                 report.selections += 1;
                 report.requested_deliveries += usize::from(selection.commit.is_some());
@@ -164,15 +196,48 @@ async fn drive(
                         .raw_effect(&adapter.intent.request.operation_id, peer.git.is_some())
                         .is_empty()
                         || !configuration.approvals.is_empty());
-                if let Some(git) = &peer.git {
+                let cuts_before = control.consumed_cuts();
+                let writes_before = control.events().len();
+                let execution = if let Some(git) = &peer.git {
                     selection
                         .execute_git(&mut app, adapter, git, signing, event)
-                        .await?;
+                        .await
                 } else {
                     selection
                         .execute(&mut app, adapter, &mut peer.checker, signing, event)
-                        .await?;
+                        .await
+                };
+                if selection.commit.is_some()
+                    || !matches!(selection.cut, Cut::None)
+                    || selection.lose_response
+                {
+                    let consumed = if let Some((write, delivery)) = selection.commit {
+                        control.events()[writes_before..].iter().any(|reached| {
+                            reached.operation_id == adapter.intent.request.operation_id
+                                && reached.write == write
+                                && reached.delivery == delivery
+                                && reached.consumed
+                        })
+                    } else if !matches!(selection.cut, Cut::None) {
+                        control.consumed_cuts() > cuts_before
+                    } else {
+                        peer.snapshot().sends > peers_before[selected].sends
+                    };
+                    report.faults.push(FaultReach {
+                        operation_id: peer.adapter.intent.request.operation_id.clone(),
+                        effect: if peer.git.is_some() {
+                            Effect::Git
+                        } else {
+                            Effect::Kubernetes
+                        },
+                        write: selection.commit.map(|(write, _)| write),
+                        cut: selection.cut,
+                        io_point: None,
+                        response_loss: selection.lose_response,
+                        consumed,
+                    });
                 }
+                execution?;
                 let peers_after = peers.iter().map(Peer::snapshot).collect::<Vec<_>>();
                 report.consumed_response_losses += usize::from(
                     selection.lose_response
@@ -349,9 +414,26 @@ async fn drive(
             },
             Action::CustodyDuringIo(point) => {
                 let before = peers.iter().map(Peer::snapshot).collect::<Vec<_>>();
-                peers[selected]
+                let result = peers[selected]
                     .custody_during_io(&mut app, point, event)
-                    .await?;
+                    .await;
+                report.faults.push(FaultReach {
+                    operation_id: peers[selected].adapter.intent.request.operation_id.clone(),
+                    effect: if peers[selected].git.is_some() {
+                        Effect::Git
+                    } else {
+                        Effect::Kubernetes
+                    },
+                    write: None,
+                    cut: Cut::None,
+                    io_point: Some(point),
+                    response_loss: false,
+                    consumed: result
+                        .as_ref()
+                        .err()
+                        .is_none_or(|finding| finding.law != "custody_cut_not_reached"),
+                });
+                result?;
                 if peers
                     .iter()
                     .enumerate()
@@ -361,7 +443,7 @@ async fn drive(
                 }
             },
             Action::CancelAtIo { point, contender } => {
-                cancel_at_io(
+                let result = cancel_at_io(
                     &mut app,
                     &configuration,
                     &mut peers,
@@ -370,7 +452,24 @@ async fn drive(
                     point,
                     event,
                 )
-                .await?;
+                .await;
+                report.faults.push(FaultReach {
+                    operation_id: peers[selected].adapter.intent.request.operation_id.clone(),
+                    effect: if peers[selected].git.is_some() {
+                        Effect::Git
+                    } else {
+                        Effect::Kubernetes
+                    },
+                    write: None,
+                    cut: Cut::None,
+                    io_point: Some(point),
+                    response_loss: false,
+                    consumed: result
+                        .as_ref()
+                        .err()
+                        .is_none_or(|finding| finding.law != "cancellation_cut_not_reached"),
+                });
+                result?;
             },
             Action::Writes(enabled) => {
                 writing = enabled;
@@ -445,6 +544,7 @@ async fn drive(
             )?;
         }
         check_reads(&app, &peers, &trusted, &control, event)?;
+        event += 1;
     }
     if trace.require_progress
         && peers
@@ -536,13 +636,12 @@ impl Peer {
         let result = execution.await;
         self.gate(None, None);
         let after = self.snapshot();
-        let expected_reads = initial.reads + 1 + usize::from(point == IoPoint::Observation);
-        let expected_sends = initial.sends + usize::from(point != IoPoint::Preflight);
+        let fresh = text(&initial.record, "state") != Some("apply_started");
+        let expected_reads =
+            initial.reads + usize::from(fresh) + usize::from(point == IoPoint::Observation);
+        let expected_sends = initial.sends + usize::from(fresh && point != IoPoint::Preflight);
         if let Some(git) = &self.git {
-            if store.control.reached()[writes_before..].contains(&StorageWrite::Response) {
-                *git.durable_ack.lock().unwrap() =
-                    git.script.state.lock().unwrap().returned_acknowledgement;
-            }
+            git.retain_returned_acknowledgement(&store.control, writes_before);
         }
         let refused = result.is_err()
             && after.record == attacked
@@ -572,6 +671,7 @@ pub(super) async fn cancel_at_io(
 ) -> Checked {
     assert!(contender < peers.len(), "bounded contender identity");
     let control = peers[selected].adapter.store.control.clone();
+    let writes_before = control.events().len();
     let mut second = open(configuration.clone(), &control);
     let before = peers.iter().map(Peer::snapshot).collect::<Vec<_>>();
     let mut contender_adapter = peers[contender].adapter.clone();
@@ -659,8 +759,10 @@ pub(super) async fn cancel_at_io(
     drop(active);
     peers[selected].gate(None, None);
     let after = peers.iter().map(Peer::snapshot).collect::<Vec<_>>();
-    let expected_reads = before[selected].reads + 1 + usize::from(point == IoPoint::Observation);
-    let expected_sends = before[selected].sends + usize::from(point != IoPoint::Preflight);
+    let fresh = text(&before[selected].record, "state") != Some("apply_started");
+    let expected_reads =
+        before[selected].reads + usize::from(fresh) + usize::from(point == IoPoint::Observation);
+    let expected_sends = before[selected].sends + usize::from(fresh && point != IoPoint::Preflight);
     if !excluded
         || after != pending
         || after[selected].reads != expected_reads
@@ -669,10 +771,22 @@ pub(super) async fn cancel_at_io(
         return Err(Finding::at("worker_exclusion", event, &control));
     }
     if let Some(git) = &peers[selected].git {
-        *git.durable_ack.lock().unwrap() =
-            git.script.state.lock().unwrap().returned_acknowledgement;
+        git.retain_returned_acknowledgement(&control, writes_before);
     }
     Ok(())
+}
+
+impl GitPeer {
+    fn retain_returned_acknowledgement(&self, control: &StorageControl, writes_before: usize) {
+        if control.events()[writes_before..].iter().any(|event| {
+            event.operation_id == self.authorization.operation_id
+                && event.write == StorageWrite::Response
+                && event.delivery != Delivery::NoCommit
+        }) {
+            let returned = self.script.state.lock().unwrap().returned_acknowledgement;
+            *self.durable_ack.lock().unwrap() = returned;
+        }
+    }
 }
 
 impl Selection {
@@ -800,14 +914,14 @@ impl Selection {
                 ));
             }
         }
-        let reached = control.reached();
-        if reached[writes_before..].contains(&StorageWrite::Response)
-            && control.last_delivery(StorageWrite::Response) != Some(Delivery::NoCommit)
-        {
-            *git.durable_ack.lock().unwrap() =
-                git.script.state.lock().unwrap().returned_acknowledgement;
-        }
-        self.check_delivery(control, writes_before, !acknowledgements.is_empty(), event)
+        git.retain_returned_acknowledgement(control, writes_before);
+        self.check_delivery(
+            control,
+            &adapter.intent.request.operation_id,
+            writes_before,
+            !acknowledgements.is_empty(),
+            event,
+        )
     }
 
     pub(super) async fn execute(
@@ -890,7 +1004,13 @@ impl Selection {
                 event,
             )?;
         }
-        self.check_delivery(&control, writes_before, !acknowledgements.is_empty(), event)
+        self.check_delivery(
+            &control,
+            &adapter.intent.request.operation_id,
+            writes_before,
+            !acknowledgements.is_empty(),
+            event,
+        )
     }
 
     fn check_committed_delivery(
@@ -995,6 +1115,7 @@ impl Selection {
     pub(super) fn check_delivery(
         self,
         control: &StorageControl,
+        operation_id: &str,
         writes_before: usize,
         acknowledged: bool,
         event: usize,
@@ -1003,7 +1124,10 @@ impl Selection {
             return Ok(());
         };
         let law = if !control.events()[writes_before..].iter().any(|reached| {
-            reached.write == write && reached.delivery == delivery && reached.consumed
+            reached.operation_id == operation_id
+                && reached.write == write
+                && reached.delivery == delivery
+                && reached.consumed
         }) {
             Some("fault_not_reached")
         } else if write == StorageWrite::Admission

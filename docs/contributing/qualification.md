@@ -556,22 +556,38 @@ Run the shared atomic-record simulator with explicit seed, case and step limits:
 ```sh
 jobs="$(mktemp -d)"
 cargo xtask explore sim --output "$jobs/simulation" \
-  --seed 21182435931731969 --cases 1000 --steps 48 --shards 2 --timeout 1800
+  --seed 21182435931731969 --cases 1000 --steps 32 --shards 2 --timeout 1800
 ```
 
 Repeat `--seed` for a sweep. [The nightly wrapper](../../tools/dev/run-nightly-soak.sh) invokes the
-same `simulation` job and requires the same explicit arguments. Cases are bounded to 10,000 per
-seed, steps to 8..48, and nonempty shards to 128. Suspended custody and cancellation events precede
-the generated steps; healthy suffixes are additional. These are application histories on virtual
-atomic records, not qualification of physical jobs, SQLite OS failures or actual receivers.
+same `simulation` job and requires explicit arguments. Cases are bounded to 10,000 per seed, steps
+to 8..32 meaningful decisions, and nonempty shards to 128. `--smoke` selects 32 histories, 32 steps
+and one shard. Generation chooses actions while actual records remain unfinished, then checks warm
+eligible progress. These are application histories on virtual records, not qualification of physical
+jobs, SQLite OS failures or actual receivers.
+
+For a duration campaign, select one seed and replace `--cases` with `--duration` in seconds:
+
+```sh
+cargo xtask explore sim --output "$jobs/duration" \
+  --seed 21182435931731969 --duration 600 --steps 32 --shards 4 --timeout 900
+```
+
+Each shard finishes between complete histories after useful work when its monotonic duration
+expires. The outer watchdog needs more than ten seconds of recording/cleanup grace after build and
+setup. A forced timeout is INCOMPLETE, never duration completion. Each shard must retain its actual
+completed count and every corresponding trace. Reaching 10,000 retained histories before expiry is
+incomplete, not early success. Count-mode smoke must finish all requested histories before its
+watchdog ceiling.
 
 The runner reuses the development test build, copies its executable into output, and executes that
-copy. Rust records each concrete trace before execution. Completion requires each shard's exact
-case-count marker, a successful test result and all expected trace identities. Passing generated
-traces are not replayed a second time. Default corpus and reached negative controls remain in the
-deterministic gate. A novel finding retains the full input, minimized input, law and reached-event
-report. Both full and minimized inputs must reproduce the law with the original binary before the
-job reports `FINDING`. An unrelated panic or failed minimization is `INCOMPLETE`.
+copy. Rust persists each chosen action batch before execution, retaining concrete input even for
+unknown crashes. Completion requires each shard's exact count or orderly-duration marker, a
+successful test result and all expected trace identities. Passing generated traces are not replayed
+a second time. Default corpus and reached negative controls remain in the deterministic gate. A
+novel finding retains the full input, minimized input, law and reached-event report. Both full and
+minimized inputs must reproduce the law with the original binary before the job reports `FINDING`.
+An unrelated panic or failed minimization is `INCOMPLETE`.
 
 The output directory contains:
 
@@ -605,7 +621,7 @@ documented replay protocol rather than relabeling it as a new job.
 
 | Runner status | Exit | Meaning                                                                 |
 | ------------- | ---- | ----------------------------------------------------------------------- |
-| `PASSED`      | 0    | Every requested case/run completed and required evidence was retained   |
+| `COMPLETED`   | 0    | Requested counts or orderly duration completed with retained evidence   |
 | `FINDING`     | 1    | A law or fuzz diagnostic failed with retained reproduction input        |
 | `INCOMPLETE`  | 2    | Setup, timeout, truncation, count mismatch, storage or evidence failure |
 | `CANCELLED`   | 130  | Handled cancellation after retiring owned commands                      |

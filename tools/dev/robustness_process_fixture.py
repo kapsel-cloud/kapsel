@@ -51,7 +51,7 @@ def finalization(output: str, phase: str) -> int:
     actual_publish = runner.atomic_json
 
     def publish(path, value):
-        if phase == "terminal" and value.get("status") == "PASSED":
+        if phase == "terminal" and value.get("status") == "COMPLETED":
             request_cancellation()
         actual_publish(path, value)
 
@@ -124,6 +124,17 @@ def fuzz_signal(artifacts: str) -> int:
     return 99
 
 
+def duration_marker_then_hang() -> int:
+    print(
+        "KAPSEL_KERNEL_DURATION_COMPLETED seed=7 shard=0/1 "
+        "cases=1 steps=32 duration_ms=1 elapsed_ms=1",
+        flush=True,
+    )
+    print("test result: ok. 1 passed; 0 failed; 0 ignored;", flush=True)
+    time.sleep(30)
+    return 0
+
+
 SCENARIOS = {
     "cancellation": cancellation,
     "finalization": finalization,
@@ -135,6 +146,7 @@ SCENARIOS = {
     "spawn-sleeping-descendant": spawn_sleeping_descendant,
     "fail-after-marker": fail_after_marker,
     "fuzz-signal": fuzz_signal,
+    "duration-marker-then-hang": duration_marker_then_hang,
 }
 
 

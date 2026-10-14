@@ -108,12 +108,12 @@ below identify suites, not separate release gates.
 | Boundary                         | Maintained checks                                                                                                             | Obligation                                                                                                                            |
 | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | Request and authority            | `kapsel-authority::grammar_tests`; gateway `validation`                                                                       | Bounds and exact signed authority; reject before persistence                                                                          |
-| Journal transitions and dispatch | [Atomic-record simulator](../../src/kernel_simulation_tests/mod.rs); compact admission, snapshot and physical dispatch checks | Enumerate fresh durable windows and recovery interactions; permission only from a confirmed fresh attempt commit                      |
+| Journal transitions and dispatch | [Atomic-record simulator](../../src/kernel_simulation_tests/mod.rs); compact admission, snapshot and physical dispatch checks | 39 virtual deliveries and compact interruptions; permission only from a confirmed fresh attempt commit                                |
 | Target disposition               | Snapshot/target-read tests; adapter/classifier tables                                                                         | Permanent rejection is `NOT_ATTEMPTED`; transient reads remain authorized without PATCH                                               |
 | Observation and classification   | `gateway::kubernetes`; receiver-recovery matrix                                                                               | Acceptance, timeout, transport and rollout facts stay distinct; unresolved evidence is `UNKNOWN`                                      |
 | Receipt and inspection           | Kubernetes/Git receipt suites; authority vectors                                                                              | Freeze before signing; commit exact bytes/digest/signer with terminal state; inspect under explicit trust                             |
 | Export                           | Fixed-client and command-interface tests                                                                                      | Exclusive copy of committed bytes; export failure cannot reopen completion                                                            |
-| Original authority after I/O     | [Atomic-record simulator](../../src/kernel_simulation_tests/mod.rs)                                                           | Suspended preflight, mutation and observation reject changed grant bytes before advancing; both stores and effects                    |
+| Original authority after I/O     | [Atomic-record simulator](../../src/kernel_simulation_tests/mod.rs)                                                           | Virtual histories reach preflight, mutation and observation custody changes in both effects; local SQLite owns atomic delivery        |
 | Stored read projections          | Journal local mapping/public-read properties; `service_application_contract` pagination                                       | Complete named SQL, reopened statement/targets/status/receipt; mixed-effect binary ordering and inaccessible IDs                      |
 | Original-key disclosure          | Atomic-record simulator                                                                                                       | Substituted public keys cannot disclose retained targets or receipts; unaffected peers remain readable; history pages use real SQLite |
 | Journal format                   | [Version rejection](qualification.md#journal-version-rejection)                                                               | Older journals remain untouched, without migration                                                                                    |
@@ -126,9 +126,9 @@ writer/reader swaps preserve the round trip but fail independent named SQL expec
 varies acknowledgements independently of old, new, foreign, missing and unknown refs. Finalization
 changes only terminal and receipt fields. Public reads preserve those facts after reopening.
 
-The same simulator owns fresh interruption enumeration, deliberate joins and suspended service
-contention. Its [window mapping](testing.md#consolidated-crash-matrix-obligations) connects safe
-pre-attempt retry, unsent and ambiguous attempts, response/observation loss and frozen zero-I/O
+The same simulator owns compact interruptions, generated unfinished-state choices and suspended
+service contention. Its [window mapping](testing.md#consolidated-crash-matrix-obligations) connects
+safe pre-attempt retry, unsent and ambiguous attempts, response/observation loss and frozen zero-I/O
 continuation. Eligible fresh cuts require exact call counts and durable-write reach. Contenders must
 acknowledge only existing responsibility or busy refusal without advancing any peer. The all-peer
 oracle checks raw original history even when application trust is unavailable. Exact Git
@@ -283,13 +283,13 @@ replay failures and run isolated negative controls. Baseline must pass. Each con
 its intended property, and minimized replay must preserve that failure. Coverage, smoke and control
 detection do not establish semantic completeness or receiver qualification.
 
-Seeded lifecycle exploration uses two to four identities per real SQLite journal. It explores
-interleaved selections, receiver changes, interruption windows, authority/material withdrawal, and
-reopening. Each event checks every identity's durable facts, independent receiver counts, and
-original evidence. It never prunes or resets attempted work to bypass capacity. Separate storage
-tests check full-capacity behaviour. The same explicit trace format supports generated schedules,
-deliberate interaction inputs, minimized findings, and direct replay. Wall-clock duration changes
-case count, not case semantics.
+Seeded lifecycle exploration uses two to four identities per virtual atomic-record journal. It
+explores interleaved selections, receiver changes, interruption windows, authority/material
+withdrawal, and reopening. Each event checks every identity's durable facts, independent receiver
+counts, and original evidence. It never prunes or resets attempted work to bypass capacity. Separate
+storage tests check full-capacity behaviour. The same explicit trace format supports generated
+schedules, compact interruption inputs, minimized findings, and direct replay. Wall-clock duration
+changes case count, not case semantics.
 
 ### Live Kubernetes and demonstration
 

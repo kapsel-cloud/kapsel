@@ -333,15 +333,13 @@ impl DeploymentImageAdapter for Adapter {
             let sent = !io.sends.is_empty();
             let failed = matches!(self.receiver, Receiver::Failed);
             let pending = matches!(self.receiver, Receiver::Pending);
-            let observation = if matches!(self.receiver, Receiver::MissingFacts) {
+            let observation = if matches!(self.receiver, Receiver::Replaced) {
+                replacement_observation(sent)
+            } else if matches!(self.receiver, Receiver::MissingFacts) {
                 ReceiverObservation::unknown()
             } else {
                 ReceiverObservation {
-                    deployment_uid: Some(if matches!(self.receiver, Receiver::Replaced) {
-                        "replacement-uid".into()
-                    } else {
-                        self.intent.uid.clone()
-                    }),
+                    deployment_uid: Some(self.intent.uid.clone()),
                     resource_version: Some(
                         if sent {
                             "observed-version"
@@ -397,6 +395,24 @@ impl DeploymentImageAdapter for Adapter {
         };
         self.pause(IoPoint::Observation).await;
         Ok(observation)
+    }
+}
+
+fn replacement_observation(sent: bool) -> ReceiverObservation {
+    ReceiverObservation {
+        deployment_uid: Some("replacement-uid".into()),
+        resource_version: Some("replacement-observed-version".into()),
+        current_generation: Some(11),
+        observed_generation: Some(12),
+        image: sent.then(|| format!("registry.example/replacement@sha256:{:064x}", 99)),
+        operation_marker: sent.then(|| "replacement-marker".into()),
+        desired_replicas: Some(9),
+        updated_replicas: Some(7),
+        available_replicas: Some(6),
+        unavailable_replicas: Some(2),
+        rollout_condition_type: Some("Progressing".into()),
+        rollout_condition_status: Some("Unknown".into()),
+        rollout_condition_reason: Some("ReplacementPending".into()),
     }
 }
 
@@ -618,6 +634,10 @@ impl Peer {
 
 impl Peer {
     pub(super) fn gate(&mut self, point: Option<IoPoint>, resume: Option<Arc<Notify>>) {
+        let fresh_attempt = !matches!(
+            text(&self.snapshot().record, "state"),
+            Some("apply_started" | "receiver_observed" | "finalized" | "not_attempted")
+        );
         self.adapter.gate = point.zip(resume.clone());
         if let Some(git) = &self.git {
             let mut state = git.script.state.lock().unwrap();
@@ -627,7 +647,7 @@ impl Peer {
                 IoPoint::Observation => Barrier::Observation,
             });
             state.resume = resume;
-            state.fresh_attempt = true;
+            state.fresh_attempt = fresh_attempt;
             state.fault = None;
         }
     }

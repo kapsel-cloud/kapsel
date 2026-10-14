@@ -1,17 +1,18 @@
-//! Generate and reduce action inputs, retain exact documents, and replay through the same laws.
+//! Reduce concrete histories and retain exact inputs before execution, including unknown crashes.
 
 use std::{
     fs,
     io::Write,
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 use sha2::{Digest, Sha256};
 
 use super::{
-    cases::{assignments, FRESH_CUTS},
-    run::{replay, replay_report},
+    generation::{self, Generation},
+    run::{generate, replay},
     trace::*,
     world::hex,
 };
@@ -41,7 +42,6 @@ pub(super) fn source_identity() -> String {
     let mut source_bytes_total = 0;
     for path in files {
         let text = std::str::from_utf8(path).unwrap();
-        // Cached names include unstaged deletions; the digest describes the current source bytes.
         if !Path::new(text).try_exists().unwrap() {
             continue;
         }
@@ -84,6 +84,8 @@ pub(super) fn trace(seed: u64, mut prefix: Vec<Action>) -> Trace {
         actions: prefix,
         defect: None,
         require_progress: true,
+        requested_steps: 0,
+        meaningful_decisions: 0,
         source_sha256: String::new(),
         executable_sha256: String::new(),
     }
@@ -95,13 +97,9 @@ pub(super) fn multi_trace(seed: u64, peers: usize, prefix: Vec<Action>) -> Trace
     input.actions = prefix;
     input.actions.push(Action::Restore);
     for peer in 0..peers {
-        input.actions.push(Action::Peer(peer));
-        input.actions.push(select(None, Cut::None, false, true));
-    }
-    input.actions.push(Action::Reopen { catalog: false });
-    for peer in (0..peers).rev() {
-        input.actions.push(Action::Peer(peer));
-        input.actions.push(select(None, Cut::None, false, true));
+        input
+            .actions
+            .extend([Action::Peer(peer), select(None, Cut::None, false, true)]);
     }
     input
 }
@@ -198,104 +196,16 @@ pub(super) async fn minimize(mut input: Trace, law: &'static str) -> Trace {
     input
 }
 
-pub(super) fn deliberate_inputs() -> Vec<Trace> {
-    let joins = [
-        (Cut::BeforeAttempt, Receiver::Failed),
-        (Cut::Unsent, Receiver::Pending),
-        (Cut::AttemptAcknowledgementLost, Receiver::Replaced),
-        (Cut::ResponseLost, Receiver::Unavailable),
-        (Cut::ResponseRecorded, Receiver::WrongGeneration),
-        (Cut::ObservationLost, Receiver::Pending),
-        (Cut::Frozen, Receiver::Replaced),
-        (Cut::None, Receiver::StaleVersion),
-        (Cut::ResponseLost, Receiver::MissingFacts),
-        (Cut::ObservationLost, Receiver::MissingFacts),
-    ];
-    assignments(2)
-        .into_iter()
-        .flat_map(|effects| {
-            joins
-                .into_iter()
-                .enumerate()
-                .map(move |(index, (cut, receiver))| {
-                    let mut input = multi_trace(
-                        u64::try_from(index).unwrap(),
-                        2,
-                        vec![
-                            Action::Peer(1),
-                            Action::CancelAtIo {
-                                point: [
-                                    IoPoint::Preflight,
-                                    IoPoint::Mutation,
-                                    IoPoint::Observation,
-                                ][index % 3],
-                                contender: 0,
-                            },
-                            Action::Peer(0),
-                            Action::ReplaceCatalog,
-                            Action::Receiver(Receiver::Unavailable),
-                            select(None, Cut::None, false, false),
-                            Action::Receiver(Receiver::Healthy),
-                            select(None, cut, false, false),
-                            Action::Trust(false),
-                            select(None, Cut::None, false, false),
-                            Action::Trust(true),
-                            Action::ReplaceCatalog,
-                            Action::Reopen { catalog: false },
-                            Action::Receiver(receiver),
-                            select(None, Cut::ObservationLost, false, false),
-                            select(None, Cut::None, false, false),
-                            Action::Receiver(Receiver::Failed),
-                            select(None, Cut::Frozen, false, false),
-                            select(
-                                Some((StorageWrite::Receipt, Delivery::NoCommit)),
-                                Cut::None,
-                                false,
-                                true,
-                            ),
-                            Action::Reopen { catalog: false },
-                            Action::Signer(Signer::Rotated),
-                            select(
-                                Some((StorageWrite::Receipt, Delivery::LostAcknowledgement)),
-                                Cut::None,
-                                false,
-                                true,
-                            ),
-                            Action::Signer(Signer::Original),
-                            select(None, Cut::None, false, true),
-                        ],
-                    );
-                    input.effects = effects.clone();
-                    if index == 1 && matches!(effects[0], Effect::Git) {
-                        let pending = input
-                            .actions
-                            .iter()
-                            .position(|action| {
-                                matches!(action, Action::Receiver(Receiver::Pending))
-                            })
-                            .unwrap();
-                        input
-                            .actions
-                            .insert(pending + 1, Action::GitRef { new: true });
-                    }
-                    input
-                })
-        })
-        .collect()
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "keep each seeded defect with its intended law and reached input"
-)]
-pub(super) fn defect_cases() -> Vec<(Defect, Vec<Action>)> {
-    vec![
+pub(super) fn defect_inputs() -> Vec<Trace> {
+    let cases = [
         (
             Defect::CustodyIgnored,
+            Effect::Git,
             vec![Action::CustodyDuringIo(IoPoint::Mutation)],
         ),
         (
             Defect::StaleTrust,
+            Effect::Kubernetes,
             vec![
                 select(None, Cut::BeforeAttempt, false, false),
                 Action::SubstituteTrustKey,
@@ -303,6 +213,7 @@ pub(super) fn defect_cases() -> Vec<(Defect, Vec<Action>)> {
         ),
         (
             Defect::CatalogConflictAccepted,
+            Effect::Git,
             vec![
                 select(None, Cut::BeforeAttempt, false, false),
                 Action::ReplaceCatalog,
@@ -310,6 +221,7 @@ pub(super) fn defect_cases() -> Vec<(Defect, Vec<Action>)> {
         ),
         (
             Defect::GitInferredAcknowledgement,
+            Effect::Git,
             vec![
                 select(None, Cut::Unsent, false, false),
                 Action::GitRef { new: true },
@@ -318,37 +230,37 @@ pub(super) fn defect_cases() -> Vec<(Defect, Vec<Action>)> {
         ),
         (
             Defect::GitObservationSubstitution,
+            Effect::Git,
             vec![select(None, Cut::Frozen, false, false)],
         ),
         (
             Defect::ReceiptRewrite,
-            vec![
-                select(None, Cut::None, false, true),
-                Action::Peer(1),
-                Action::Trust(false),
-            ],
+            Effect::Git,
+            vec![select(None, Cut::None, false, true), Action::Trust(false)],
         ),
         (
             Defect::Remint,
+            Effect::Kubernetes,
             vec![select(None, Cut::Unsent, false, false)],
         ),
         (
-            Defect::Remint,
-            vec![Action::CancelAtIo {
-                point: IoPoint::Mutation,
-                contender: 1,
-            }],
-        ),
-        (
             Defect::InitialUnknown,
+            Effect::Kubernetes,
             vec![select(None, Cut::Frozen, false, false)],
         ),
         (
             Defect::NoOp,
+            Effect::Kubernetes,
+            vec![select(None, Cut::None, false, true), Action::AssertProgress],
+        ),
+        (
+            Defect::NoOp,
+            Effect::Git,
             vec![select(None, Cut::None, false, true), Action::AssertProgress],
         ),
         (
             Defect::WrongPeerRead,
+            Effect::Kubernetes,
             vec![
                 select(None, Cut::BeforeAttempt, false, false),
                 Action::Peer(1),
@@ -357,56 +269,22 @@ pub(super) fn defect_cases() -> Vec<(Defect, Vec<Action>)> {
         ),
         (
             Defect::WrongSigner,
+            Effect::Git,
             vec![
                 select(None, Cut::Frozen, false, false),
-                Action::ReplaceCatalog,
                 Action::Reopen { catalog: false },
                 Action::Signer(Signer::Rotated),
                 select(None, Cut::None, false, true),
             ],
         ),
-    ]
-}
-
-pub(super) fn defect_inputs() -> Vec<Trace> {
-    defect_cases()
+    ];
+    cases
         .into_iter()
-        .flat_map(|(defect, prefix)| {
-            let assignments = match defect {
-                Defect::GitInferredAcknowledgement | Defect::GitObservationSubstitution => {
-                    vec![vec![Effect::Git; 2]]
-                },
-                Defect::ReceiptRewrite => {
-                    vec![vec![Effect::Git; 2], vec![Effect::Git, Effect::Kubernetes]]
-                },
-                Defect::NoOp
-                | Defect::WrongSigner
-                | Defect::CatalogConflictAccepted
-                | Defect::StaleTrust
-                | Defect::CustodyIgnored => vec![
-                    vec![Effect::Kubernetes; 2],
-                    vec![Effect::Git; 2],
-                    vec![Effect::Kubernetes, Effect::Git],
-                ],
-                _ => vec![vec![Effect::Kubernetes; 2]],
-            };
-            assignments.into_iter().map(move |effects| {
-                let mut input = multi_trace(3, 2, prefix.clone());
-                input.effects = effects;
-                if matches!(
-                    defect,
-                    Defect::NoOp
-                        | Defect::WrongSigner
-                        | Defect::CatalogConflictAccepted
-                        | Defect::StaleTrust
-                        | Defect::CustodyIgnored
-                ) && matches!(input.effects[1], Effect::Git)
-                {
-                    input.actions.insert(0, Action::Peer(1));
-                }
-                input.defect = Some(defect);
-                input
-            })
+        .map(|(defect, effect, actions)| {
+            let mut input = multi_trace(3, 2, actions);
+            input.effects = vec![effect, Effect::Kubernetes];
+            input.defect = Some(defect);
+            input
         })
         .collect()
 }
@@ -431,15 +309,8 @@ pub(super) fn defect_law(defect: Defect) -> &'static str {
 pub(super) fn check_replay_result(input: &Trace, result: Checked) {
     if let Some(defect) = input.defect {
         let finding = result.unwrap_err();
-        assert_eq!(
-            finding.law,
-            defect_law(defect),
-            "unrelated failure is not defect detection"
-        );
-        assert!(
-            finding.defect_reached.contains(&defect),
-            "defect branch was not reached"
-        );
+        assert_eq!(finding.law, defect_law(defect));
+        assert!(finding.defect_reached.contains(&defect));
     } else {
         assert_eq!(result, Ok(()));
     }
@@ -447,7 +318,7 @@ pub(super) fn check_replay_result(input: &Trace, result: Checked) {
 
 pub(super) fn durable_writes(effect: Effect) -> Vec<StorageWrite> {
     let mut writes = vec![StorageWrite::Admission];
-    if matches!(effect, Effect::Kubernetes) {
+    if effect == Effect::Kubernetes {
         writes.push(StorageWrite::Authorization);
     }
     writes.extend([
@@ -458,57 +329,6 @@ pub(super) fn durable_writes(effect: Effect) -> Vec<StorageWrite> {
         StorageWrite::Receipt,
     ]);
     writes
-}
-
-fn delivery_prefix(write: StorageWrite, delivery: Delivery, reopened: bool) -> Vec<Action> {
-    let mut actions = vec![
-        Action::Peer(1),
-        select(None, Cut::BeforeAttempt, false, false),
-        Action::Peer(0),
-    ];
-    match write {
-        StorageWrite::Admission => {},
-        StorageWrite::Authorization => actions.push(select(
-            Some((StorageWrite::Admission, Delivery::LostAcknowledgement)),
-            Cut::None,
-            false,
-            false,
-        )),
-        StorageWrite::Rejection | StorageWrite::Attempt | StorageWrite::Response => {
-            actions.push(select(None, Cut::BeforeAttempt, false, false));
-        },
-        StorageWrite::Observation => {
-            actions.push(select(None, Cut::ResponseRecorded, false, false));
-        },
-        StorageWrite::Receipt => actions.push(select(None, Cut::Frozen, false, false)),
-    }
-    if write == StorageWrite::Rejection {
-        if reopened {
-            actions.push(Action::Reopen { catalog: false });
-        }
-        actions.push(Action::Receiver(
-            if reopened && delivery == Delivery::NoCommit {
-                Receiver::Replaced
-            } else {
-                Receiver::StaleVersion
-            },
-        ));
-    }
-    actions.push(select(Some((write, delivery)), Cut::None, false, true));
-    actions
-}
-
-pub(super) fn warm_finish(actions: &mut Vec<Action>, peers: usize) {
-    actions.push(Action::Writes(true));
-    for peer in 0..peers {
-        actions.extend([
-            Action::Peer(peer),
-            Action::Receiver(Receiver::Healthy),
-            Action::Signer(Signer::Original),
-            select(None, Cut::None, false, true),
-            Action::AssertProgress,
-        ]);
-    }
 }
 
 pub(super) fn delivery_inputs() -> Vec<Trace> {
@@ -523,10 +343,35 @@ pub(super) fn delivery_inputs() -> Vec<Trace> {
                 ]
                 .into_iter()
                 .map(move |delivery| {
-                    let mut actions = delivery_prefix(write, delivery, true);
-                    warm_finish(&mut actions, 2);
-                    let mut input = multi_trace(0, 2, actions);
-                    input.effects = vec![effect; 2];
+                    let mut actions = match write {
+                        StorageWrite::Admission => vec![],
+                        StorageWrite::Authorization => vec![select(
+                            Some((StorageWrite::Admission, Delivery::LostAcknowledgement)),
+                            Cut::None,
+                            false,
+                            false,
+                        )],
+                        StorageWrite::Rejection
+                        | StorageWrite::Attempt
+                        | StorageWrite::Response => {
+                            vec![select(None, Cut::BeforeAttempt, false, false)]
+                        },
+                        StorageWrite::Observation => {
+                            vec![select(None, Cut::ResponseRecorded, false, false)]
+                        },
+                        StorageWrite::Receipt => vec![select(None, Cut::Frozen, false, false)],
+                    };
+                    if write == StorageWrite::Rejection {
+                        actions.push(Action::Receiver(Receiver::StaleVersion));
+                    }
+                    actions.extend([
+                        select(Some((write, delivery)), Cut::None, false, true),
+                        Action::Receiver(Receiver::Healthy),
+                        select(None, Cut::None, false, true),
+                        Action::AssertProgress,
+                    ]);
+                    let mut input = trace(0, actions);
+                    input.effects = vec![effect];
                     input
                 })
             })
@@ -534,132 +379,10 @@ pub(super) fn delivery_inputs() -> Vec<Trace> {
         .collect()
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "keep directed prefixes, bounded unguided actions and warm/cold repair in order"
-)]
-pub(super) fn generated(seed: u64, steps: usize) -> Trace {
-    let effects = assignments(4)[usize::try_from(seed % 3).unwrap()].clone();
-    let scenario = seed.wrapping_add(u64::try_from(steps).unwrap());
-    let mut actions = match (seed / 3) % 3 {
-        0 => {
-            let writes = durable_writes(effects[0]);
-            let index = usize::try_from(scenario / 9).unwrap();
-            delivery_prefix(
-                writes[index % writes.len()],
-                [
-                    Delivery::Confirmed,
-                    Delivery::NoCommit,
-                    Delivery::LostAcknowledgement,
-                ][index % 3],
-                false,
-            )
-        },
-        1 => {
-            let point = [IoPoint::Preflight, IoPoint::Mutation, IoPoint::Observation]
-                [usize::try_from((scenario / 9) % 3).unwrap()];
-            vec![
-                Action::Peer(1),
-                Action::CustodyDuringIo(point),
-                Action::Peer(0),
-                Action::CancelAtIo {
-                    point,
-                    contender: usize::try_from((scenario / 9) % 2).unwrap(),
-                },
-                Action::ReplaceCatalog,
-                Action::Receiver(Receiver::Unavailable),
-                select(None, Cut::None, false, true),
-            ]
-        },
-        _ => vec![
-            Action::Peer(1),
-            select(None, Cut::BeforeAttempt, false, false),
-            Action::Peer(0),
-            select(
-                Some((StorageWrite::Response, Delivery::NoCommit)),
-                Cut::None,
-                matches!(effects[0], Effect::Git),
-                false,
-            ),
-            Action::Receiver(Receiver::Pending),
-            select(
-                Some((StorageWrite::Observation, Delivery::NoCommit)),
-                Cut::None,
-                false,
-                false,
-            ),
-            select(
-                Some((StorageWrite::Observation, Delivery::LostAcknowledgement)),
-                Cut::None,
-                false,
-                false,
-            ),
-            select(
-                Some((StorageWrite::Receipt, Delivery::NoCommit)),
-                Cut::None,
-                false,
-                true,
-            ),
-            Action::Signer(Signer::Rotated),
-            select(
-                Some((StorageWrite::Receipt, Delivery::LostAcknowledgement)),
-                Cut::None,
-                false,
-                true,
-            ),
-        ],
-    };
-    warm_finish(&mut actions, 3);
-    // Reserve an untouched identity for unguided selections after the directed scenario retires.
-    let mut random = scenario.wrapping_add(1);
-    for _ in 0..steps.min(4) {
-        random ^= random << 13;
-        random ^= random >> 7;
-        random ^= random << 17;
-        actions.push(Action::Peer(usize::try_from((random / 8) % 4).unwrap()));
-        actions.push(match random % 11 {
-            0 => Action::Receiver(Receiver::Unavailable),
-            1 => Action::Receiver(Receiver::Pending),
-            2 => Action::Receiver(Receiver::Failed),
-            3 => Action::Receiver(Receiver::Healthy),
-            4 => Action::Reopen {
-                catalog: random & 8 == 0,
-            },
-            5 => Action::Trust(false),
-            6 => Action::Trust(true),
-            7 => Action::ReplaceCatalog,
-            8 => Action::SubstituteTrustKey,
-            9 => Action::Signer(if random & 16 == 0 {
-                Signer::Invalid
-            } else {
-                Signer::Rotated
-            }),
-            _ if random & 16 == 0 => select(None, Cut::None, true, random & 8 == 0),
-            _ => select(
-                None,
-                FRESH_CUTS[usize::try_from((random / 11) % 7).unwrap()],
-                false,
-                random & 8 == 0,
-            ),
-        });
-    }
-    actions.push(Action::Restore);
-    for peer in 0..4 {
-        actions.extend([Action::Peer(peer), Action::Signer(Signer::Original)]);
-    }
-    actions.extend([
-        Action::Peer(3),
-        select(None, Cut::None, false, true),
-        Action::AssertProgress,
-        Action::Reopen { catalog: false },
-        Action::Peer(usize::try_from(seed % 4).unwrap()),
-        select(None, Cut::None, false, true),
-    ]);
-    let mut input = trace(seed, vec![]);
-    input.peers = 4;
-    input.actions = actions;
-    input.effects = effects;
-    input
+pub(super) async fn generated(seed: u64, steps: usize) -> (Trace, Checked, RunReport) {
+    let mut input = generation::input(seed, steps);
+    let (result, report) = generate(&mut input, &mut Generation::new(seed, steps, None)).await;
+    (input, result, report)
 }
 
 pub(super) fn read_trace(path: &Path) -> Trace {
@@ -672,7 +395,6 @@ pub(super) fn read_trace(path: &Path) -> Trace {
         .read_to_end(&mut bytes)
         .unwrap();
     assert!(bytes.len() <= 64 * 1024);
-
     let input: Trace = serde_json::from_slice(&bytes).unwrap();
     assert!(input.actions.len() <= 256 && (1..=4).contains(&input.peers));
     assert!(input.effects.is_empty() || input.effects.len() == input.peers);
@@ -689,6 +411,16 @@ fn persist_document(path: &Path, bytes: &[u8]) {
         .unwrap();
     file.write_all(bytes).unwrap();
     file.sync_all().unwrap();
+}
+
+pub(super) fn persist_trace(path: &Path, input: &Trace) {
+    let temporary = path.with_extension("pending");
+    persist_document(&temporary, &serde_json::to_vec(input).unwrap());
+    fs::rename(temporary, path).unwrap();
+    fs::File::open(path.parent().unwrap())
+        .unwrap()
+        .sync_all()
+        .unwrap();
 }
 
 fn check_job_result(result: &Checked) {
@@ -713,26 +445,25 @@ async fn retain_finding(
         &directory.join(format!("finding-{case}.json")),
         &serde_json::to_vec(&minimized).unwrap(),
     );
-    let reduced = replay(&minimized, true).await;
-    if std::env::var_os("KAPSEL_KERNEL_JOB").is_some() {
-        let reduced = reduced.unwrap_err();
-        assert_eq!(reduced.law, finding.law, "minimization changed the finding");
-        let report = serde_json::json!({
-            "case": case, "finding": finding, "minimized_finding": reduced, "reached": reached,
-        });
-        persist_document(
-            &directory.join("failure.json"),
-            &serde_json::to_vec(&report).unwrap(),
-        );
-    } else {
-        check_replay_result(&minimized, reduced);
-    }
+    let reduced = replay(&minimized, true).await.unwrap_err();
+    assert_eq!(reduced.law, finding.law, "minimization changed the finding");
+    let report = serde_json::json!({
+        "case": case, "finding": finding, "minimized_finding": reduced, "reached": reached,
+        "require_progress": input.require_progress,
+        "replay": format!("KAPSEL_KERNEL_REPLAY={} {} {} --ignored --exact --nocapture",
+            directory.join(format!("case-{case}.json")).display(),
+            std::env::current_exe().unwrap().display(),
+            "kernel_simulation_tests::kernel_trace_exploration_or_replay"),
+    });
+    persist_document(
+        &directory.join("failure.json"),
+        &serde_json::to_vec(&report).unwrap(),
+    );
 }
 
 pub(super) async fn explore_or_replay() {
     if let Ok(path) = std::env::var("KAPSEL_KERNEL_REPLAY") {
-        let path = PathBuf::from(path);
-        let input = read_trace(&path);
+        let input = read_trace(&PathBuf::from(path));
         let result = replay(&input, true).await;
         if std::env::var_os("KAPSEL_KERNEL_JOB").is_some() {
             check_job_result(&result);
@@ -754,33 +485,36 @@ pub(super) async fn explore_or_replay() {
     };
     let seed = number("KAPSEL_KERNEL_SEED", 0);
     let cases = usize::try_from(number("KAPSEL_KERNEL_CASES", 32)).unwrap();
-    let steps = usize::try_from(number("KAPSEL_KERNEL_STEPS", 12)).unwrap();
+    let steps = usize::try_from(number("KAPSEL_KERNEL_STEPS", 32)).unwrap();
     let shards = usize::try_from(number("KAPSEL_KERNEL_SHARDS", 1)).unwrap();
     let shard = usize::try_from(number("KAPSEL_KERNEL_SHARD_INDEX", 0)).unwrap();
-    assert!((1..=10_000).contains(&cases) && (8..=48).contains(&steps));
+    let duration = number("KAPSEL_KERNEL_DURATION_MS", 0);
+    assert!((1..=10_000).contains(&cases) && (8..=32).contains(&steps));
     assert!((1..=128).contains(&shards) && shards <= cases && shard < shards);
-    let inputs = if std::env::var_os("KAPSEL_KERNEL_DEFECTS").is_some() {
-        defect_inputs()
-    } else if std::env::var_os("KAPSEL_KERNEL_DELIBERATE").is_some() {
-        deliberate_inputs()
-    } else {
-        (0..cases)
-            .map(|case| generated(seed.wrapping_add(u64::try_from(case).unwrap()), steps))
-            .collect::<Vec<_>>()
-    };
+    let started = Instant::now();
+
     let mut completed = 0;
     let mut reached = RunReport::default();
-    for (case, mut input) in inputs.into_iter().enumerate() {
-        if case % shards != shard {
-            continue;
+    let mut case = shard;
+    loop {
+        if duration == 0 && case >= cases {
+            break;
         }
+        assert!(
+            completed < 10_000,
+            "history retention ceiling reached before duration expiry"
+        );
+        let case_seed = seed.wrapping_add(u64::try_from(case).unwrap());
+        let mut input = generation::input(case_seed, steps);
         input.source_sha256.clone_from(&source);
         input.executable_sha256.clone_from(&executable_digest);
-        persist_document(
-            &directory.join(format!("case-{case}.json")),
-            &serde_json::to_vec(&input).unwrap(),
-        );
-        let (result, report) = replay_report(&input, true).await;
+        let path = directory.join(format!("case-{case}.json"));
+        persist_document(&path, &serde_json::to_vec(&input).unwrap());
+        let (result, report) = generate(
+            &mut input,
+            &mut Generation::new(case_seed, steps, Some(path)),
+        )
+        .await;
         if let Err(finding) = &result {
             report.print();
             retain_finding(&directory, case, &input, finding, &report).await;
@@ -792,11 +526,24 @@ pub(super) async fn explore_or_replay() {
             check_replay_result(&input, result);
         }
         completed += 1;
+        case += shards;
+        // Real monotonic time: paused Tokio time must not turn duration into a count shortcut.
+        if duration > 0 && started.elapsed() >= Duration::from_millis(duration) {
+            break;
+        }
     }
     reached.print();
-    println!(
-        "KAPSEL_KERNEL_COMPLETED seed={seed} shard={shard}/{shards} \
-         cases={completed} steps={steps}"
-    );
+    if duration > 0 {
+        println!(
+            "KAPSEL_KERNEL_DURATION_COMPLETED seed={seed} shard={shard}/{shards} \
+            cases={completed} steps={steps} duration_ms={duration} elapsed_ms={}",
+            started.elapsed().as_millis()
+        );
+    } else {
+        println!(
+            "KAPSEL_KERNEL_COMPLETED seed={seed} shard={shard}/{shards} \
+            cases={completed} steps={steps}"
+        );
+    }
     println!("KAPSEL_KERNEL_EVIDENCE source={source} executable={executable_digest}");
 }

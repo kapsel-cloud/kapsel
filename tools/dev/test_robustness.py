@@ -200,7 +200,7 @@ class RobustnessTests(unittest.TestCase):
                 )
             self.assertEqual(
                 runner.read_json(output / "result.json")["status"],
-                "PASSED" if phase == "terminal" else "CANCELLED",
+                "COMPLETED" if phase == "terminal" else "CANCELLED",
             )
 
     def test_external_sigterm_retires_the_owned_command(self):
@@ -331,7 +331,7 @@ class RobustnessTests(unittest.TestCase):
             return outputs
 
         args = argparse.Namespace(
-            executable=None, replay=None, seed=[7], cases=3, shards=2, steps=8
+            executable=None, replay=None, seed=[7], cases=3, shards=2, steps=8, duration=None
         )
         with patch.object(self.job, "run", side_effect=commands):
             runner.simulation(self.job, args, "a" * 64)
@@ -340,6 +340,109 @@ class RobustnessTests(unittest.TestCase):
         self.assertTrue(
             runner.read_json(self.evidence / "simulation.json")["cargo_build_requested"]
         )
+
+    def test_duration_protocol_requires_elapsed_time_useful_work_and_normal_exit(self):
+        marker = (
+            "KAPSEL_KERNEL_DURATION_COMPLETED seed=7 shard=0/1 "
+            "cases=2 steps=32 duration_ms=1000 elapsed_ms=1037"
+        )
+        self.assertEqual(
+            runner.duration_completion(marker + "\n" + PASSED_TEST, 7, 1, 0, 32, 1000), 2
+        )
+        for output in (
+            marker,
+            marker.replace("cases=2", "cases=0") + "\n" + PASSED_TEST,
+            marker.replace("1037", "999") + "\n" + PASSED_TEST,
+            marker.replace("duration_ms=1000", "duration_ms=999") + "\n" + PASSED_TEST,
+            marker + "\n" + marker + "\n" + PASSED_TEST,
+            "KAPSEL_KERNEL_COMPLETED seed=7 shard=0/1 cases=2 steps=32\n" + PASSED_TEST,
+        ):
+            with self.assertRaises(runner.Incomplete):
+                runner.duration_completion(output, 7, 1, 0, 32, 1000)
+
+    def test_duration_shards_retain_their_actual_unequal_completed_counts(self):
+        binary = self.root / "duration-binary"
+        binary.write_bytes(b"fixture")
+        digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+        self.job.deadline = time.monotonic() + 30
+
+        def commands(selected, environments=None):
+            if selected[0][0] == "cargo":
+                return [
+                    json.dumps(
+                        {
+                            "reason": "compiler-artifact",
+                            "executable": str(binary),
+                            "target": {"name": "kapsel"},
+                            "profile": {"test": True},
+                        }
+                    )
+                ]
+            assert environments is not None
+            outputs = []
+            for index, environment in enumerate(environments):
+                self.assertEqual(environment["KAPSEL_KERNEL_DURATION_MS"], "1000")
+                count = index + 1
+                directory = Path(environment["KAPSEL_KERNEL_EVIDENCE"])
+                for case in range(index, index + count * 2, 2):
+                    runner.atomic_json(
+                        directory / f"case-{case}.json",
+                        {"seed": 7 + case, "executable_sha256": digest, "source_sha256": "a" * 64},
+                    )
+                outputs.append(
+                    f"KAPSEL_KERNEL_DURATION_COMPLETED seed=7 shard={index}/2 "
+                    f"cases={count} steps=32 duration_ms=1000 elapsed_ms=1040\n" + PASSED_TEST
+                )
+            return outputs
+
+        args = argparse.Namespace(
+            executable=None, replay=None, seed=[7], cases=1000, shards=2, steps=32, duration=1
+        )
+        with patch.object(self.job, "run", side_effect=commands):
+            runner.simulation(self.job, args, "a" * 64)
+        self.assertEqual(
+            set(runner.read_json(self.evidence / "traces-7-1.json")), {"case-1.json", "case-3.json"}
+        )
+
+    def test_watchdog_interruption_cannot_accept_an_orderly_duration_marker(self):
+        self.job.deadline = time.monotonic() + 0.2
+        with self.assertRaisesRegex(runner.Incomplete, "timeout"):
+            self.job.run([self.fixture_command("duration-marker-then-hang")])
+        record = self.job.commands[0]
+        self.assertEqual(record.get("exit_status"), -signal.SIGKILL)
+        self.assertIn(
+            "KAPSEL_KERNEL_DURATION_COMPLETED", (self.evidence / record["log"]).read_text()
+        )
+
+    def test_unknown_simulation_crash_keeps_the_original_concrete_input(self):
+        binary = self.root / "crash-binary"
+        binary.write_bytes(b"fixture")
+        original = {"seed": 7, "actions": [{"Select": {"cut": "Unsent"}}]}
+
+        def commands(selected, environments=None):
+            if selected[0][0] == "cargo":
+                return [
+                    json.dumps(
+                        {
+                            "reason": "compiler-artifact",
+                            "executable": str(binary),
+                            "target": {"name": "kapsel"},
+                            "profile": {"test": True},
+                        }
+                    )
+                ]
+            assert environments is not None
+            directory = Path(environments[0]["KAPSEL_KERNEL_EVIDENCE"])
+            runner.atomic_json(directory / "case-0.json", original)
+            raise runner.CommandFailed(101, "panicked at unknown defect")
+
+        args = argparse.Namespace(
+            executable=None, replay=None, seed=[7], cases=1, shards=1, steps=32, duration=None
+        )
+        with patch.object(self.job, "run", side_effect=commands):
+            with self.assertRaises(runner.Incomplete):
+                runner.simulation(self.job, args, "a" * 64)
+        self.assertEqual(runner.read_json(self.evidence / "traces-7-0/case-0.json"), original)
 
     def test_simulation_panics_without_reached_law_evidence_are_incomplete(self):
         for error in (
@@ -462,7 +565,7 @@ class RobustnessTests(unittest.TestCase):
 
     def test_independent_jobs_preserve_old_evidence_and_never_require_triage(self):
         for failure, code, status in (
-            (None, 0, "PASSED"),
+            (None, 0, "COMPLETED"),
             (runner.Finding("law"), 1, "FINDING"),
             (runner.Incomplete("timeout"), 2, "INCOMPLETE"),
             (runner.Cancelled("signal"), 130, "CANCELLED"),
@@ -494,7 +597,7 @@ class RobustnessTests(unittest.TestCase):
         publish = runner.atomic_json
 
         def fail_terminal(path, value):
-            if path.name == "result.json" and value.get("status") == "PASSED":
+            if path.name == "result.json" and value.get("status") == "COMPLETED":
                 raise OSError("disk full")
             publish(path, value)
 
