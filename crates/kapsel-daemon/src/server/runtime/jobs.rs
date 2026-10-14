@@ -119,6 +119,49 @@ mod tests {
     use super::*;
 
     #[test]
+    fn abort_before_supervisor_poll_retires_registration_and_both_permits_without_work() {
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let jobs = Jobs::new();
+            let connections = Arc::new(Semaphore::new(1));
+            let execution = Arc::new(Semaphore::new(1));
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let observed = calls.clone();
+            jobs.spawn(
+                Arc::new(connections.clone().try_acquire_owned().unwrap()),
+                Some(Arc::new(Selection {
+                    operation_id: "unstarted-op".into(),
+                    running: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                    _permit: execution.clone().try_acquire_owned().unwrap(),
+                })),
+                move || {
+                    observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                },
+            )
+            .unwrap();
+            assert_eq!(jobs.0.lock().unwrap().len(), 1);
+            assert_eq!(connections.available_permits(), 0);
+            assert_eq!(execution.available_permits(), 0);
+            // No await has let the current-thread supervisor enqueue blocking work.
+            jobs.first_supervisor().unwrap().abort();
+            timeout(Duration::from_secs(1), jobs.drain()).await.unwrap();
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+            assert_eq!(connections.available_permits(), 1);
+            assert_eq!(execution.available_permits(), 1);
+            assert!(jobs.0.lock().unwrap().is_empty());
+
+            jobs.spawn(
+                Arc::new(connections.clone().try_acquire_owned().unwrap()),
+                None,
+                || {},
+            )
+            .unwrap();
+            timeout(Duration::from_secs(1), jobs.drain()).await.unwrap();
+            assert_eq!(connections.available_permits(), 1);
+        });
+    }
+
+    #[test]
     fn supervisor_abort_keeps_permits_until_blocking_work_retires() {
         let runtime = Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {

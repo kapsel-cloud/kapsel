@@ -354,7 +354,7 @@ async fn receipt_process_kills_before_sql_after_sql_and_after_commit_preserve_hi
         copy_closed_journal(&baseline, &path);
         let before = stored_rows(&Connection::open(&path).unwrap());
         let ready = path.parent().unwrap().join("ready");
-        let mut child = spawn_process_child(scenario, &path, &ready, None);
+        let mut child = spawn_process_child(scenario, &path, &ready);
         wait_for_child_seam(&mut child, &ready);
         if scenario == "receipt_sql_executed" {
             let journal_path = PathBuf::from(format!("{}-journal", path.display()));

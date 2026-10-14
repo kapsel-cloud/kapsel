@@ -98,21 +98,33 @@ fn enumerated_lifecycle_physical_retirement_barriers() {
                 [Actor::DisconnectCaller, Actor::AbortSupervisor],
                 [Actor::AbortSupervisor, Actor::DisconnectCaller],
             ] {
-                let runtime = Builder::new_current_thread().enable_all().build().unwrap();
-                runtime.block_on(run_retirement_schedule(
-                    first_id,
-                    acknowledge_before_park,
-                    actors,
-                ));
+                for abort_before_start in [false, true] {
+                    let mut builder = Builder::new_current_thread();
+                    if abort_before_start {
+                        builder.max_blocking_threads(1);
+                    }
+                    let runtime = builder.enable_all().build().unwrap();
+                    runtime.block_on(run_retirement_schedule(
+                        first_id,
+                        acknowledge_before_park,
+                        actors,
+                        abort_before_start,
+                    ));
+                }
             }
         }
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered registration/abort/retirement schedule"
+)]
 async fn run_retirement_schedule(
     first_id: &str,
     acknowledge_before_park: bool,
     actors: [Actor; 2],
+    abort_before_start: bool,
 ) {
     let second_id = if first_id == "a" { "b" } else { "a" };
     let admitted = Arc::new(Mutex::new(BTreeSet::new()));
@@ -131,14 +143,43 @@ async fn run_retirement_schedule(
         },
     );
 
+    // Occupy the real blocking pool so the registered closure cannot start until released.
+    let (unblock, blocked) = std::sync::mpsc::channel();
+    let blocking_peer = if abort_before_start {
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let peer = tokio::task::spawn_blocking(move || {
+            let _ = started.send(());
+            let _ = blocked.recv();
+        });
+        timeout(Duration::from_secs(2), ready)
+            .await
+            .unwrap()
+            .unwrap();
+        Some(peer)
+    } else {
+        None
+    };
+
     let caller_state = state.clone();
     let id = first_id.to_owned();
     let caller = tokio::spawn(async move { submit_and_read_admission(&caller_state, &id).await });
-    timeout(Duration::from_secs(2), entered.acquire())
+    if abort_before_start {
+        timeout(Duration::from_secs(2), async {
+            while state.jobs.first_supervisor().is_none() {
+                tokio::task::yield_now().await;
+            }
+            // Let the registered supervisor enqueue its blocking closure, still behind the peer.
+            tokio::task::yield_now().await;
+        })
         .await
-        .unwrap()
-        .unwrap()
-        .forget();
+        .unwrap();
+    } else {
+        timeout(Duration::from_secs(2), entered.acquire())
+            .await
+            .unwrap()
+            .unwrap()
+            .forget();
+    }
 
     let supervisor = state.jobs.first_supervisor().unwrap();
     for actor in actors {
@@ -155,7 +196,56 @@ async fn run_retirement_schedule(
         }
         assert_eq!(state.submission.available_permits(), 0, "{actors:?}");
         assert_eq!(state.observation(first_id), ExecutionObservation::Active);
-        assert_eq!(calls.lock().unwrap().as_slice(), [first_id]);
+        let started_calls = [first_id];
+        let expected = if abort_before_start {
+            &[][..]
+        } else {
+            &started_calls[..]
+        };
+        assert_eq!(calls.lock().unwrap().as_slice(), expected);
+    }
+
+    if abort_before_start {
+        assert!(!admitted.lock().unwrap().contains(first_id));
+        assert_eq!(state.connections.available_permits(), CONNECTIONS_MAX - 1);
+        {
+            let retirement = state.jobs.drain();
+            tokio::pin!(retirement);
+            assert!(timeout(Duration::from_millis(20), &mut retirement)
+                .await
+                .is_err());
+            assert_eq!(state.submission.available_permits(), 0);
+            unblock.send(()).unwrap();
+            timeout(Duration::from_secs(2), entered.acquire())
+                .await
+                .unwrap()
+                .unwrap()
+                .forget();
+            assert_eq!(calls.lock().unwrap().as_slice(), [first_id]);
+            assert!(timeout(Duration::from_millis(20), &mut retirement)
+                .await
+                .is_err());
+            release.add_permits(1);
+            timeout(Duration::from_secs(2), retirement).await.unwrap();
+        }
+        timeout(Duration::from_secs(2), blocking_peer.unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let _ = timeout(Duration::from_secs(2), caller).await.unwrap();
+        assert_eq!(state.submission.available_permits(), 1);
+        assert_eq!(state.connections.available_permits(), CONNECTIONS_MAX);
+        release.add_permits(1);
+        assert_eq!(
+            submit_and_read_admission(&state, second_id).await["status"],
+            "ADMITTED"
+        );
+        timeout(Duration::from_secs(2), state.jobs.drain())
+            .await
+            .unwrap();
+        assert_eq!(calls.lock().unwrap().as_slice(), [first_id, second_id]);
+        assert_eq!(admitted.lock().unwrap().len(), 2);
+        return;
     }
 
     let other_admission = submit_and_read_admission(&state, second_id).await;
@@ -187,7 +277,7 @@ async fn run_retirement_schedule(
         release.add_permits(1);
         timeout(Duration::from_secs(2), retirement).await.unwrap();
     }
-    let _ = caller.await;
+    let _ = timeout(Duration::from_secs(2), caller).await.unwrap();
     assert_eq!(state.submission.available_permits(), 1);
     assert_eq!(state.connections.available_permits(), CONNECTIONS_MAX);
     assert!(admitted.lock().unwrap().contains(first_id));
@@ -197,7 +287,9 @@ async fn run_retirement_schedule(
         submit_and_read_admission(&state, second_id).await["status"],
         "ADMITTED"
     );
-    state.jobs.drain().await;
+    timeout(Duration::from_secs(2), state.jobs.drain())
+        .await
+        .unwrap();
     drop(state);
     assert_eq!(calls.lock().unwrap().as_slice(), [first_id, second_id]);
     assert_eq!(admitted.lock().unwrap().len(), 2);

@@ -1,4 +1,6 @@
-//! Real entrypoint exclusion, startup/receiver stop barriers and cold history continuity.
+//! Real entrypoint exclusion, startup/receiver stop barriers and original-byte restart binding.
+use std::process::Output;
+
 use super::*;
 
 fn spawn_publisher(root: &Path) -> ChildGuard {
@@ -7,12 +9,7 @@ fn spawn_publisher(root: &Path) -> ChildGuard {
     ChildGuard::new(command.spawn().unwrap())
 }
 
-fn wait_for_retirement(mut child: ChildGuard) -> Output {
-    let deadline = Instant::now() + FIXTURE_TIMEOUT;
-    while child.try_wait().unwrap().is_none() {
-        assert!(Instant::now() < deadline, "child did not retire");
-        thread::sleep(Duration::from_millis(5));
-    }
+fn wait_for_retirement(child: ChildGuard) -> Output {
     child.wait_with_output().unwrap()
 }
 
@@ -99,7 +96,7 @@ fn sigterm_during_startup_retains_exclusion_then_retires_without_binding() {
 }
 
 #[test]
-fn sigterm_drains_provider_before_publication_and_catalog_key_removal_preserves_receipt() {
+fn sigterm_drains_provider_before_exact_publication_and_original_byte_restart() {
     let server = success_server();
     let root = installation_root_with_url("cold-provider-stop", &server.url);
     let socket = root.join("run/kapsel/kapseld.sock");
@@ -137,13 +134,10 @@ fn sigterm_drains_provider_before_publication_and_catalog_key_removal_preserves_
     let operator_document_path = root.join("etc/kapsel/operator.json");
     let mut candidate: Value =
         serde_json::from_slice(&fs::read(&operator_document_path).unwrap()).unwrap();
-    candidate["approvals"] = serde_json::json!([]);
-    let with_trust = serde_json::to_vec(&candidate).unwrap();
-    assert_outcome(
-        &publish_operator_document(&root, &with_trust),
-        0,
-        b"PUBLISHED\n",
-    );
+    candidate["approvals"][0]["label"] = serde_json::json!("cold-published label");
+    let bytes = serde_json::to_vec(&candidate).unwrap();
+    assert_outcome(&publish_operator_document(&root, &bytes), 0, b"PUBLISHED\n");
+    assert_eq!(fs::read(&operator_document_path).unwrap(), bytes);
     assert_eq!(fs::read(&journal).unwrap(), original_journal);
     let next = spawn_installed(&root, 1);
     let mut receipt = connect(&socket);
@@ -156,29 +150,7 @@ fn sigterm_drains_provider_before_publication_and_catalog_key_removal_preserves_
     assert_eq!(response["receipt_hex"], lowercase_hex(&original_receipt));
     assert!(wait_for_retirement(next).status.success());
 
-    candidate["authorization_keys"] = serde_json::json!([]);
-    let without_trust = serde_json::to_vec(&candidate).unwrap();
-    assert_outcome(
-        &publish_operator_document(&root, &without_trust),
-        0,
-        b"PUBLISHED\n",
-    );
-    let next = spawn_installed(&root, 1);
-    let mut receipt = connect(&socket);
-    write_frame(
-        &mut receipt,
-        br#"{"request":"get_set_deployment_image_receipt","operation_id":"process-op"}"#,
-    );
-    let response: Value = serde_json::from_slice(&read_frame(&mut receipt)).unwrap();
-    assert_eq!(response["error_class"], "authority_unavailable");
-    assert!(wait_for_retirement(next).status.success());
     assert_eq!(fs::read(&journal).unwrap(), original_journal);
-
-    assert_outcome(
-        &publish_operator_document(&root, &with_trust),
-        0,
-        b"PUBLISHED\n",
-    );
     server.finish();
     fs::remove_dir_all(root).unwrap();
 }

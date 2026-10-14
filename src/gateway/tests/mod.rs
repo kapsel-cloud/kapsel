@@ -1,5 +1,6 @@
 use std::{
     fs,
+    ops::{Deref, DerefMut},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -203,52 +204,41 @@ impl DeploymentImageAdapter for FakeAdapter {
     }
 }
 
-struct ProcessMutationAdapter {
-    ready_path: PathBuf,
-    patch_count_path: PathBuf,
-}
+struct ProcessChild(Child);
 
-#[allow(
-    clippy::unused_async_trait_impl,
-    reason = "the fake mirrors the production async provider seam"
-)]
-impl DeploymentImageAdapter for ProcessMutationAdapter {
-    async fn identify(
-        &mut self,
-        _: &SetDeploymentImageRequest,
-    ) -> Result<TargetIdentity, TargetReadError> {
-        Ok(TargetIdentity {
-            deployment_uid: "deployment-uid-1".into(),
-            resource_version: "resource-version-0".into(),
-        })
-    }
+impl Deref for ProcessChild {
+    type Target = Child;
 
-    async fn apply(&mut self, _: DispatchPermission) -> Result<ApplyOutcome, ()> {
-        let patch_count = fs::read_to_string(&self.patch_count_path)
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(0)
-            + 1;
-        fs::write(&self.patch_count_path, patch_count.to_string()).map_err(|_| ())?;
-        fs::write(&self.ready_path, b"provider-side-effect-complete").map_err(|_| ())?;
-        std::future::pending::<Result<ApplyOutcome, ()>>().await
-    }
-
-    async fn observe(
-        &mut self,
-        _: &SetDeploymentImageRequest,
-        _: &ApplyOutcome,
-    ) -> Result<ReceiverObservation, ()> {
-        Err(())
+    fn deref(&self) -> &Child {
+        &self.0
     }
 }
 
-fn spawn_process_child(
-    scenario: &str,
-    database: &Path,
-    ready: &Path,
-    patch_count: Option<&Path>,
-) -> Child {
+impl DerefMut for ProcessChild {
+    fn deref_mut(&mut self) -> &mut Child {
+        &mut self.0
+    }
+}
+
+impl Drop for ProcessChild {
+    #[allow(
+        clippy::print_stderr,
+        reason = "incomplete fixture cleanup needs a fixed diagnostic"
+    )]
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while matches!(self.0.try_wait(), Ok(None)) {
+            if Instant::now() >= deadline {
+                eprintln!("process-kill child cleanup incomplete");
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
+fn spawn_process_child(scenario: &str, database: &Path, ready: &Path) -> ProcessChild {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
         .args([
@@ -264,13 +254,10 @@ fn spawn_process_child(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit());
-    if let Some(path) = patch_count {
-        command.env("KAPSEL_PROCESS_PATCH_COUNT", path);
-    }
-    command.spawn().unwrap()
+    ProcessChild(command.spawn().unwrap())
 }
 
-fn wait_for_child_seam(child: &mut Child, ready: &Path) {
+fn wait_for_child_seam(child: &mut ProcessChild, ready: &Path) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
         if ready.exists() {
@@ -280,15 +267,24 @@ fn wait_for_child_seam(child: &mut Child, ready: &Path) {
         assert!(status.is_none(), "process-kill child exited before seam");
         std::thread::sleep(Duration::from_millis(10));
     }
-    let _ = child.kill();
-    let _ = child.wait();
+    kill_child(child);
     assert!(ready.exists(), "process-kill child did not reach seam");
 }
 
-fn kill_child(child: &mut Child) {
+fn kill_child(child: &mut ProcessChild) {
     child.kill().unwrap();
-    let status = child.wait().unwrap();
-    assert!(!status.success());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(!status.success());
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "process-kill child did not retire"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 mod validation;

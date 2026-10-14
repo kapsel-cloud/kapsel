@@ -379,8 +379,11 @@ executable identity. Previous findings never gate a new job.
 
 The runtime's `enumerated_lifecycle_physical_retirement_barriers` separately exercises tracked jobs.
 It parks work before or after admission acknowledgement, disconnects the caller and aborts the
-supervisor in both orders. Same-ID and different-ID contention must leave drain and capacity blocked
-until physical release. This does not replace Linux socket/process or native-service qualification.
+supervisor in both orders. It also aborts registered work while its closure waits in the real
+blocking pool. Same-ID and different-ID contention must leave drain and capacity blocked until
+physical release. Released work retires, then a subsequently selected eligible peer proceeds. A
+separate job check aborts before the supervisor can enqueue work and requires zero closure calls.
+These checks do not replace Linux socket/process or native-service qualification.
 
 ### Consolidated crash-matrix obligations
 

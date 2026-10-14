@@ -627,6 +627,7 @@ fn dispatch(
     message: Message,
     has_request_id: bool,
     handshake_phase: &mut HandshakePhase,
+    tool_call: impl FnOnce(Value, Option<Value>) -> Value,
 ) -> Option<Value> {
     let id = message.id.unwrap_or(Value::Null);
     if (has_request_id && !valid_id(&id)) || message.jsonrpc != "2.0" {
@@ -676,6 +677,7 @@ fn dispatch(
             }
             None
         },
+        "notifications/cancelled" if !has_request_id => None,
         "notifications/initialized" | "notifications/cancelled" => {
             Some(error(id, -32600, "Invalid Request"))
         },
@@ -689,7 +691,7 @@ fn dispatch(
                 }
                 Some(result(id, tools()))
             } else {
-                Some(call(id, message.params))
+                Some(tool_call(id, message.params))
             }
         },
         _ if !has_request_id => None,
@@ -755,7 +757,7 @@ fn main() -> ExitCode {
                     reason = "explicit branches separate dispatch from invalid envelopes"
                 )]
                 match serde_json::from_value::<Message>(value) {
-                    Ok(message) => dispatch(message, has_request_id, &mut handshake_phase),
+                    Ok(message) => dispatch(message, has_request_id, &mut handshake_phase, call),
                     Err(_) => Some(error(envelope_id, -32600, "Invalid Request")),
                 }
             },
@@ -781,6 +783,254 @@ fn main() -> ExitCode {
 mod tests {
     #![allow(clippy::unwrap_used, reason = "independent frozen grammar fixtures")]
     use super::*;
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive phase/message dispatch table"
+    )]
+    fn dispatch_table_binds_every_phase_and_message_category() {
+        use HandshakePhase::{AwaitingInitialize as First, AwaitingInitialized as Second, Ready};
+
+        // Literal rows: response code (0 is a result), next phase and call count.
+        let initialize = json!({"protocolVersion":"older-version","capabilities":{},
+            "clientInfo":{"name":"test","version":"1"}});
+        let cases = [
+            (
+                "initialize",
+                true,
+                Some(initialize),
+                [
+                    (Some(0), Second, 0),
+                    (Some(-32600), Second, 0),
+                    (Some(-32600), Ready, 0),
+                ],
+            ),
+            (
+                "initialize",
+                true,
+                Some(json!({})),
+                [
+                    (Some(-32600), First, 0),
+                    (Some(-32600), Second, 0),
+                    (Some(-32600), Ready, 0),
+                ],
+            ),
+            (
+                "initialize",
+                false,
+                None,
+                [(None, First, 0), (None, Second, 0), (None, Ready, 0)],
+            ),
+            (
+                "notifications/initialized",
+                false,
+                None,
+                [(None, First, 0), (None, Ready, 0), (None, Ready, 0)],
+            ),
+            (
+                "notifications/initialized",
+                false,
+                Some(json!({"unexpected":"SECRET"})),
+                [(None, First, 0), (None, Second, 0), (None, Ready, 0)],
+            ),
+            (
+                "notifications/initialized",
+                true,
+                None,
+                [
+                    (Some(-32600), First, 0),
+                    (Some(-32600), Second, 0),
+                    (Some(-32600), Ready, 0),
+                ],
+            ),
+            (
+                "notifications/cancelled",
+                false,
+                Some(json!({"requestId":9,"reason":"SECRET"})),
+                [(None, First, 0), (None, Second, 0), (None, Ready, 0)],
+            ),
+            (
+                "notifications/cancelled",
+                true,
+                None,
+                [
+                    (Some(-32600), First, 0),
+                    (Some(-32600), Second, 0),
+                    (Some(-32600), Ready, 0),
+                ],
+            ),
+            (
+                "tools/list",
+                true,
+                None,
+                [
+                    (Some(-32600), First, 0),
+                    (Some(-32600), Second, 0),
+                    (Some(0), Ready, 0),
+                ],
+            ),
+            (
+                "tools/list",
+                true,
+                Some(json!({"unexpected":"SECRET"})),
+                [
+                    (Some(-32600), First, 0),
+                    (Some(-32600), Second, 0),
+                    (Some(-32602), Ready, 0),
+                ],
+            ),
+            (
+                "tools/call",
+                true,
+                Some(json!({"name":"kapsel.submit",
+                "arguments":{"operation_id":"op-1"}})),
+                [
+                    (Some(-32600), First, 0),
+                    (Some(-32600), Second, 0),
+                    (Some(0), Ready, 1),
+                ],
+            ),
+            (
+                "tools/call",
+                false,
+                None,
+                [(None, First, 0), (None, Second, 0), (None, Ready, 0)],
+            ),
+            (
+                "tools/list",
+                false,
+                None,
+                [(None, First, 0), (None, Second, 0), (None, Ready, 0)],
+            ),
+            (
+                "unknown",
+                true,
+                Some(json!("SECRET")),
+                [
+                    (Some(-32601), First, 0),
+                    (Some(-32601), Second, 0),
+                    (Some(-32601), Ready, 0),
+                ],
+            ),
+            (
+                "unknown",
+                false,
+                Some(json!("SECRET")),
+                [(None, First, 0), (None, Second, 0), (None, Ready, 0)],
+            ),
+        ];
+        for (method, has_id, params, expectations) in cases {
+            for (initial, (code, next, calls)) in
+                [First, Second, Ready].into_iter().zip(expectations)
+            {
+                let mut phase = initial;
+                let mut actual_calls = 0;
+                let response = dispatch(
+                    Message {
+                        jsonrpc: "2.0".into(),
+                        id: Some(json!(9)),
+                        method: method.into(),
+                        params: params.clone(),
+                    },
+                    has_id,
+                    &mut phase,
+                    |id, params| {
+                        actual_calls += 1;
+                        assert_eq!(
+                            decode_call(params).unwrap().1,
+                            json!({"version":1,"request":"submit_set_deployment_image",
+                            "operation_id":"op-1"})
+                        );
+                        result(id, json!({}))
+                    },
+                );
+                assert_eq!(phase, next, "{initial:?} {method}");
+                assert_eq!(actual_calls, calls, "{initial:?} {method}");
+                assert_eq!(
+                    response
+                        .as_ref()
+                        .map(|value| { value["error"]["code"].as_i64().unwrap_or(0) }),
+                    code,
+                    "{initial:?} {method}"
+                );
+                if let Some(response) = response {
+                    assert_eq!(response["id"], 9);
+                    assert!(!response.to_string().contains("SECRET"));
+                    assert!(response["error"].get("data").is_none());
+                    if method == "initialize" && code == Some(0) {
+                        assert_eq!(response["result"]["protocolVersion"], "2025-11-25");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::panic,
+        reason = "forbidden dispatch must fail the ID/version fixture"
+    )]
+    fn invalid_ids_and_versions_are_bounded_without_disclosure_or_calls() {
+        for initial in [
+            HandshakePhase::AwaitingInitialize,
+            HandshakePhase::AwaitingInitialized,
+            HandshakePhase::Ready,
+        ] {
+            for id in [
+                Value::Null,
+                json!(true),
+                json!([]),
+                json!({"secret":"SECRET"}),
+                json!("SECRET".repeat(22)),
+                json!("é".repeat(65)),
+            ] {
+                let mut phase = initial;
+                let response = dispatch(
+                    Message {
+                        jsonrpc: "2.0".into(),
+                        id: Some(id),
+                        method: "tools/call".into(),
+                        params: None,
+                    },
+                    true,
+                    &mut phase,
+                    |_, _| panic!("invalid ID dispatched"),
+                );
+                assert_eq!(
+                    response,
+                    Some(error(Value::Null, -32600, "Invalid Request"))
+                );
+                assert_eq!(phase, initial);
+            }
+            let mut phase = initial;
+            assert_eq!(
+                dispatch(
+                    Message {
+                        jsonrpc: "SECRET".into(),
+                        id: Some(json!(9)),
+                        method: "tools/call".into(),
+                        params: None,
+                    },
+                    true,
+                    &mut phase,
+                    |_, _| panic!("invalid version dispatched")
+                ),
+                Some(error(Value::Null, -32600, "Invalid Request"))
+            );
+            assert_eq!(phase, initial);
+        }
+        for id in [
+            json!(0),
+            json!(-1),
+            json!(1.5),
+            json!(""),
+            json!("x".repeat(128)),
+            json!("é".repeat(64)),
+        ] {
+            assert!(valid_id(&id));
+        }
+    }
 
     #[test]
     fn discovery_advertises_only_the_pinned_id_or_cursor_schemas() {

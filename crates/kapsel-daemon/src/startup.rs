@@ -354,7 +354,7 @@ pub(crate) mod tests {
         fmt::Write as _,
         fs,
         os::unix::{
-            fs::PermissionsExt as _,
+            fs::{MetadataExt as _, PermissionsExt as _},
             net::{UnixListener, UnixStream as StdUnixStream},
         },
         path::{Path, PathBuf},
@@ -583,6 +583,67 @@ pub(crate) mod tests {
             assert!(retained.join("kapseld.sock").exists());
             assert!(!runtime_path.join("kapseld.sock").exists());
             drop(listener);
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn invalid_socket_tuple_catalogue_preserves_every_named_inode() {
+        for kind in [
+            "regular",
+            "directory",
+            "symlink",
+            "wrong-mode",
+            "linked",
+            "active",
+            "fifo",
+        ] {
+            let root = valid_root(&format!("socket-tuple-{kind}"));
+            let inputs = InstallationInputs::open_at(&root).unwrap();
+            let path = root.join("run/kapsel/kapseld.sock");
+            let mut active = None;
+            match kind {
+                "regular" => private_file(&path, b"not a socket"),
+                "directory" => fs::create_dir(&path).unwrap(),
+                "symlink" => {
+                    private_file(&path.with_extension("target"), b"target");
+                    std::os::unix::fs::symlink(path.with_extension("target"), &path).unwrap();
+                },
+                "fifo" => {
+                    rustix::fs::mkfifoat(
+                        rustix::fs::CWD,
+                        &path,
+                        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+                    )
+                    .unwrap();
+                },
+                "wrong-mode" | "linked" | "active" => {
+                    let listener = UnixListener::bind(&path).unwrap();
+                    let mode = if kind == "wrong-mode" { 0o600 } else { 0o660 };
+                    fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+                    if kind == "linked" {
+                        fs::hard_link(&path, path.with_extension("linked")).unwrap();
+                    }
+                    if kind == "active" {
+                        active = Some(listener);
+                    }
+                },
+                _ => unreachable!(),
+            }
+            let before = fs::symlink_metadata(&path).unwrap();
+            let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+            assert!(
+                runtime.block_on(async { inputs.bind_listener() }).is_err(),
+                "{kind}"
+            );
+            let after = fs::symlink_metadata(&path).unwrap();
+            assert_eq!(
+                (after.dev(), after.ino(), after.mode(), after.nlink()),
+                (before.dev(), before.ino(), before.mode(), before.nlink()),
+                "{kind}"
+            );
+            drop(active);
+            drop(inputs);
             fs::remove_dir_all(root).unwrap();
         }
     }

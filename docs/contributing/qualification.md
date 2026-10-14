@@ -370,15 +370,11 @@ KAPSEL_TEST_INSPECT="$PWD/target/debug/kapsel" \
   ordinary_restart_reuses_frozen_snapshot_receipt_under_rotated_configuration -- --exact
 ```
 
-With `sg`, Python 3 and an existing `docker` group that the test user may activate through `sg`,
-include the ignored distinct-effective-group case. The group must differ from the server's effective
-GID. In a disposable root-owned test container, provision that fixture group inside the container,
-not on the development host. The test uses only the group identity, not Docker daemon access:
-
-```sh
-cargo test --locked -p kapsel-daemon --features test-harness --test linux_process \
-  distinct_effective_gid_is_denied_before_frame_read -- --ignored --exact
-```
+The bundled native identity profile checks a caller with a different effective GID and the socket
+GID only as a supplementary group. Filesystem access permits its connection, but the ordinary
+installed daemon must close it before reading a frame. This witness uses the fresh profile's
+identities; it needs neither `sg` nor a developer-owned `docker` group. Native execution requires an
+explicitly selected archive and a separately authorized fresh host, as listed above.
 
 Cold publication validation also runs at the shared application owner:
 
@@ -387,12 +383,15 @@ cargo test --locked -p kapsel --test service_application_contract cold_validatio
 cargo test --locked -p kapsel-daemon --features test-harness
 ```
 
-Linux startup/publication tests cover private lock custody, owned temporary cleanup and publication
-fault outcomes. Per-instance barriers cover startup termination, blocked storage retirement,
-receiver waiting and lifecycle contention. Process tests preserve original history/receipt bytes
-through catalog and key removal. These are deterministic source/process checks, not disk-full,
-power-loss, native-host or live-Kubernetes qualification. Never mutate source during a
-read-only-mounted container gate, and archive untracked source files alongside its diff.
+Local real-filesystem startup tests own the complete invalid-socket tuple and unchanged-inode
+catalogue. Linux publication tests observe exact bytes, temporary-file sync, custody recheck, rename
+and directory sync, with failures at the actual sync-operation boundary. Process tests retain one
+stale-socket startup binding, invalid-root refusal, signal/drain and publisher exclusion. Cold
+publication changes a label and preserves original history/receipt bytes through read-first restart.
+Catalog and trust withdrawal semantics stay with application access and generated histories. These
+are deterministic source/process checks, not disk-full, power-loss, native-host or live-Kubernetes
+qualification. Never mutate source during a read-only-mounted container gate, and archive untracked
+source files alongside its diff.
 
 See [Kapsel service](../reference/service.md) for the current boundary and
 [service testing](evidence.md#kapsel-service) for evidence coverage.

@@ -12,7 +12,7 @@ use std::{
     net::Shutdown,
     os::unix::net::UnixListener,
     path::Path,
-    process::{Command, Stdio},
+    process::{Command, Output, Stdio},
     sync::{
         atomic::{AtomicU64, Ordering},
         mpsc,
@@ -22,6 +22,10 @@ use std::{
 };
 
 use serde_json::{json, Value};
+
+#[path = "support/child.rs"]
+mod child;
+use child::ChildGuard;
 
 #[allow(
     dead_code,
@@ -42,16 +46,25 @@ fn root() -> std::path::PathBuf {
     path
 }
 
-fn bridge(socket: &Path, input: &[u8]) -> Vec<Value> {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_kapsel-service-mcp"))
-        .env("KAPSELD_TEST_CLIENT_SOCKET", socket)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+fn bridge_output(socket: &Path, input: &[u8]) -> Output {
+    let mut child = ChildGuard::new(
+        Command::new(env!("CARGO_BIN_EXE_kapsel-service-mcp"))
+            .env("KAPSELD_TEST_CLIENT_SOCKET", socket)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
     child.stdin.take().unwrap().write_all(input).unwrap();
-    let output = child.wait_with_output().unwrap();
+    child.wait_with_output().unwrap()
+}
+
+fn bridge(socket: &Path, input: &[u8]) -> Vec<Value> {
+    protocol_messages(&bridge_output(socket, input))
+}
+
+fn protocol_messages(output: &Output) -> Vec<Value> {
     assert!(
         output.status.success(),
         "{}",
@@ -67,6 +80,10 @@ fn bridge(socket: &Path, input: &[u8]) -> Vec<Value> {
 }
 
 fn run_raw(input: &[u8], exchanges: &[(Value, Value)]) -> Vec<Value> {
+    protocol_messages(&run_raw_output(input, exchanges))
+}
+
+fn run_raw_output(input: &[u8], exchanges: &[(Value, Value)]) -> Output {
     let root = root();
     let socket = root.join("socket");
     let listener = UnixListener::bind(&socket).unwrap();
@@ -117,11 +134,11 @@ fn run_raw(input: &[u8], exchanges: &[(Value, Value)]) -> Vec<Value> {
         }
         assert_eq!(count, exchanges.len(), "missing socket access");
     });
-    let responses = bridge(&socket, input);
+    let output = bridge_output(&socket, input);
     let _ = stop.send(());
     server.join().unwrap();
     fs::remove_dir_all(root).unwrap();
-    responses
+    output
 }
 
 fn run(lines: &[Value], exchanges: &[(Value, Value)]) -> Vec<Value> {
@@ -267,6 +284,86 @@ fn hostile_and_duplicate_arguments_are_rejected_before_any_socket_access() {
         "error":{"code":-32602,"message":"Invalid params"}})
     );
     assert_eq!(responses[2]["error"]["code"], -32700);
+}
+
+#[test]
+fn stdio_limits_eof_and_utf8_bind_actual_frames_without_socket_access() {
+    const LIMIT: usize = 16 * 1024;
+    let base = serde_json::to_vec(&json!({"jsonrpc":"2.0","id":9,"method":"tools/list"})).unwrap();
+    let mut exact = base.clone();
+    exact.resize(LIMIT - 1, b' ');
+    exact.push(b'\n');
+    let responses = run_raw(&exact, &[]);
+    assert_eq!(
+        responses,
+        vec![json!({"jsonrpc":"2.0","id":9,
+        "error":{"code":-32600,"message":"Invalid Request"}})]
+    );
+
+    let mut over = base.clone();
+    over.resize(LIMIT, b' ');
+    over.push(b'\n');
+    for input in [
+        &over[..],
+        &base[..],
+        b"{\"secret\":\"SECRET",
+        &exact[..LIMIT - 1],
+    ] {
+        let output = run_raw_output(input, &[]);
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.is_empty());
+    }
+    assert_eq!(
+        run_raw(b"\xff\n", &[]),
+        vec![json!({"jsonrpc":"2.0","id":null,
+        "error":{"code":-32700,"message":"Parse error"}})]
+    );
+}
+
+#[test]
+fn premature_tools_and_cancellation_do_not_exchange_or_reset_initialization() {
+    let mut lines = vec![tool(3, "kapsel.submit", &json!({"operation_id":"op-1"}))];
+    lines.push(handshake().remove(0));
+    lines.push(tool(4, "kapsel.submit", &json!({"operation_id":"op-1"})));
+    lines.push(json!({"jsonrpc":"2.0","method":"notifications/cancelled",
+        "params":{"requestId":1,"reason":"SECRET"}}));
+    lines.push(handshake().remove(1));
+    lines.push(tool(5, "kapsel.submit", &json!({"operation_id":"op-1"})));
+    lines.push(json!({"jsonrpc":"2.0","method":"notifications/cancelled",
+        "params":{"requestId":5,"reason":"SECRET"}}));
+    lines.push(handshake().remove(0));
+    lines.push(tool(
+        6,
+        "kapsel.get_status",
+        &json!({"operation_id":"op-1"}),
+    ));
+    let responses = run(
+        &lines,
+        &[
+            (
+                json!({"version":1,"request":"submit_set_deployment_image","operation_id":"op-1"}),
+                json!({"version":1,"status":"ADMITTED","phase":"requested"}),
+            ),
+            (
+                json!({
+                    "version":1,
+                    "request":"get_set_deployment_image_status",
+                    "operation_id":"op-1"
+                }),
+                json!({"version":1,"status":"ERROR","error_class":"authority_unavailable"}),
+            ),
+        ],
+    );
+    assert_eq!(responses.len(), 6);
+    for index in [0, 2, 4] {
+        assert_eq!(responses[index]["error"]["code"], -32600);
+    }
+    assert_eq!(service(&responses[3])["service"]["status"], "ADMITTED");
+    assert_eq!(responses[5]["id"], 6);
+    assert!(!serde_json::to_string(&responses)
+        .unwrap()
+        .contains("SECRET"));
 }
 
 #[test]

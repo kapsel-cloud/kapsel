@@ -46,8 +46,6 @@ fn main() -> ExitCode {
             OsStr::new("--socket"),
             OsStr::new("/run/kapsel/kapseld.sock"),
         ];
-    #[cfg(feature = "test-harness")]
-    let serve = serve || std::env::var_os("KAPSELD_TEST_SOCKET").is_some();
     if !serve && !replace {
         let _ = writeln!(
             std::io::stderr(),

@@ -1,5 +1,7 @@
 //! Operator-only cold publication. Filesystem authority stays in retained installation roots.
 
+#[cfg(test)]
+use std::os::fd::AsRawFd as _;
 use std::{
     fs::File,
     io::{self, Read as _, Write as _},
@@ -136,21 +138,68 @@ enum Fault {
     DirectorySync,
 }
 
-fn publish(directory: &File, bytes: &[u8]) -> Outcome {
-    publish_candidate(
-        directory,
-        bytes,
-        #[cfg(test)]
-        Fault::None,
-    )
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Step {
+    Bytes,
+    FileSync,
+    Custody,
+    Rename,
+    DirectorySync,
+    Published,
 }
 
-fn publish_candidate(directory: &File, bytes: &[u8], #[cfg(test)] fault: Fault) -> Outcome {
+#[derive(Default)]
+struct SyncIo {
+    #[cfg(test)]
+    fault: Option<Fault>,
+    #[cfg(test)]
+    steps: Vec<Step>,
+}
+
+impl SyncIo {
+    #[allow(
+        clippy::unused_self,
+        clippy::needless_pass_by_ref_mut,
+        reason = "test-only observation and descriptor faults share the actual sync operation"
+    )]
+    fn synchronize(&mut self, file: &File, #[cfg(test)] step: Step) -> io::Result<()> {
+        #[cfg(test)]
+        let refused_descriptor = {
+            self.steps.push(step);
+            let refuse = matches!(
+                (self.fault, step),
+                (Some(Fault::FileSync), Step::FileSync)
+                    | (Some(Fault::DirectorySync), Step::DirectorySync)
+            );
+            if refuse {
+                // O_PATH names the real inode but cannot be fsynced. The syscall, not a
+                // detached fault branch, must return this failure. Omitting it must fail tests.
+                Some(File::from(rustix::fs::open(
+                    format!("/proc/self/fd/{}", file.as_raw_fd()),
+                    OFlags::PATH | OFlags::CLOEXEC,
+                    Mode::empty(),
+                )?))
+            } else {
+                None
+            }
+        };
+        #[cfg(test)]
+        let file = refused_descriptor.as_ref().unwrap_or(file);
+        file.sync_all()
+    }
+}
+
+fn publish(directory: &File, bytes: &[u8]) -> Outcome {
+    publish_candidate(directory, bytes, &mut SyncIo::default())
+}
+
+fn publish_candidate(directory: &File, bytes: &[u8], sync: &mut SyncIo) -> Outcome {
     let Ok(mut temporary) = TemporaryCandidate::create(directory) else {
         return Outcome::NotPublished;
     };
     #[cfg(test)]
-    if fault == Fault::Write {
+    if sync.fault == Some(Fault::Write) {
         return Outcome::NotPublished;
     }
     if temporary.file.write_all(bytes).is_err() {
@@ -158,17 +207,38 @@ fn publish_candidate(directory: &File, bytes: &[u8], #[cfg(test)] fault: Fault) 
     }
 
     #[cfg(test)]
-    if fault == Fault::FileSync {
-        return Outcome::NotPublished;
+    {
+        assert_eq!(
+            std::fs::read(
+                descriptor_directory_path(directory)
+                    .unwrap()
+                    .join(&temporary.name)
+            )
+            .unwrap(),
+            bytes,
+            "exact candidate bytes must precede sync"
+        );
+        sync.steps.push(Step::Bytes);
     }
-    if temporary.file.sync_all().is_err()
-        || require_private_identity(
-            directory,
-            &temporary.name,
+    if sync
+        .synchronize(
             &temporary.file,
-            OPERATOR_DOCUMENT_BYTES_MAX as u64,
+            #[cfg(test)]
+            Step::FileSync,
         )
         .is_err()
+    {
+        return Outcome::NotPublished;
+    }
+    #[cfg(test)]
+    sync.steps.push(Step::Custody);
+    if require_private_identity(
+        directory,
+        &temporary.name,
+        &temporary.file,
+        OPERATOR_DOCUMENT_BYTES_MAX as u64,
+    )
+    .is_err()
         || validate_optional_private_file(
             directory,
             "operator.json",
@@ -180,16 +250,18 @@ fn publish_candidate(directory: &File, bytes: &[u8], #[cfg(test)] fault: Fault) 
     }
 
     #[cfg(test)]
-    if fault == Fault::BeforeRename {
+    if sync.fault == Some(Fault::BeforeRename) {
         return Outcome::NotPublished;
     }
 
     // An error returned by rename does not prove that publication did not occur.
     #[cfg(test)]
-    if fault == Fault::Rename {
+    if sync.fault == Some(Fault::Rename) {
         // Force a real rename syscall failure after the final checks, not a substitute outcome.
         assert!(unlinkat(directory, temporary.name.as_str(), AtFlags::empty()).is_ok());
     }
+    #[cfg(test)]
+    sync.steps.push(Step::Rename);
     if renameat(
         directory,
         temporary.name.as_str(),
@@ -201,13 +273,18 @@ fn publish_candidate(directory: &File, bytes: &[u8], #[cfg(test)] fault: Fault) 
         return Outcome::Indeterminate;
     }
 
+    if sync
+        .synchronize(
+            directory,
+            #[cfg(test)]
+            Step::DirectorySync,
+        )
+        .is_err()
+    {
+        return Outcome::Indeterminate;
+    }
     #[cfg(test)]
-    if fault == Fault::DirectorySync {
-        return Outcome::Indeterminate;
-    }
-    if directory.sync_all().is_err() {
-        return Outcome::Indeterminate;
-    }
+    sync.steps.push(Step::Published);
     Outcome::Published
 }
 
@@ -310,7 +387,28 @@ mod tests {
             let stale = root.join("etc/kapsel/.operator-stale.tmp");
             fs::write(&stale, b"not ours").unwrap();
 
-            let result = publish_candidate(&roots.configuration, &candidate, fault);
+            let mut sync = SyncIo {
+                fault: Some(fault),
+                steps: Vec::new(),
+            };
+            let result = publish_candidate(&roots.configuration, &candidate, &mut sync);
+            let all_steps = [
+                Step::Bytes,
+                Step::FileSync,
+                Step::Custody,
+                Step::Rename,
+                Step::DirectorySync,
+                Step::Published,
+            ];
+            let attempted = match fault {
+                Fault::Write => 0,
+                Fault::FileSync => 2,
+                Fault::BeforeRename => 3,
+                Fault::Rename => 4,
+                Fault::DirectorySync => 5,
+                Fault::None => 6,
+            };
+            assert_eq!(sync.steps, all_steps[..attempted], "{fault:?}");
 
             let renamed = matches!(fault, Fault::None | Fault::DirectorySync);
             assert_eq!(

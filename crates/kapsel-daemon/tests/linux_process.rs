@@ -12,13 +12,12 @@ use std::{
     fs,
     io::{Read as _, Write as _},
     net::{Shutdown, TcpListener, TcpStream},
-    ops::{Deref, DerefMut},
     os::unix::{
         fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _},
         net::{UnixListener as StdUnixListener, UnixStream},
     },
     path::{Path, PathBuf},
-    process::{Child, Command, Output, Stdio},
+    process::{Child, Command, Stdio},
     sync::{
         atomic::{AtomicUsize, Ordering},
         mpsc, Arc,
@@ -53,43 +52,9 @@ const DEPLOYMENT_PATH: &str = "/apis/apps/v1/namespaces/demo/deployments/agent-a
 const PATCH_DEPLOYMENT_PATH: &str = "/apis/apps/v1/namespaces/demo/deployments/agent-api?";
 const FIXTURE_TIMEOUT: Duration = Duration::from_secs(10);
 
-struct ChildGuard(Option<Child>);
-
-impl ChildGuard {
-    fn new(child: Child) -> Self {
-        Self(Some(child))
-    }
-
-    fn wait_with_output(mut self) -> std::io::Result<Output> {
-        self.0.take().unwrap().wait_with_output()
-    }
-}
-
-impl Deref for ChildGuard {
-    type Target = Child;
-
-    fn deref(&self) -> &Self::Target {
-        self.0.as_ref().unwrap()
-    }
-}
-
-impl DerefMut for ChildGuard {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.0.as_mut().unwrap()
-    }
-}
-
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.0.take() {
-            if child.try_wait().ok().flatten().is_none() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-        }
-    }
-}
-
+#[path = "support/child.rs"]
+mod child;
+use child::ChildGuard;
 fn root(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("kapseld-linux-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&path);
@@ -106,7 +71,7 @@ fn effective_gid() -> u32 {
 }
 
 fn numeric_identity(argument: &str) -> u32 {
-    let output = Command::new("id").arg(argument).output().unwrap();
+    let output = ChildGuard::output(Command::new("id").arg(argument)).unwrap();
     assert!(output.status.success());
     String::from_utf8(output.stdout)
         .unwrap()
@@ -119,20 +84,6 @@ fn kapseld_executable() -> PathBuf {
     std::env::var_os("KAPSELD_TEST_EXECUTABLE").map_or_else(
         || PathBuf::from(env!("CARGO_BIN_EXE_kapseld")),
         PathBuf::from,
-    )
-}
-
-fn spawn_harness_daemon(socket: &Path, expected_gid: u32, connections: usize) -> ChildGuard {
-    ChildGuard::new(
-        Command::new(kapseld_executable())
-            .env("KAPSELD_TEST_SOCKET", socket)
-            .env("KAPSELD_TEST_EXPECTED_GID", expected_gid.to_string())
-            .env("KAPSELD_TEST_CONNECTIONS", connections.to_string())
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap(),
     )
 }
 
@@ -216,21 +167,6 @@ fn wait_for_socket(socket: &Path) {
     // A killed daemon leaves its pathname behind. Successful connection, not existence, proves
     // the replacement listener is bound. The fixture connection budget includes this probe.
     drop(connect(socket));
-}
-
-fn group_gid(group: &str) -> u32 {
-    let output = Command::new("getent")
-        .args(["group", group])
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-    String::from_utf8(output.stdout)
-        .unwrap()
-        .split(':')
-        .nth(2)
-        .unwrap()
-        .parse()
-        .unwrap()
 }
 
 fn write_frame(stream: &mut UnixStream, body: &[u8]) {
@@ -664,7 +600,6 @@ fn success_server() -> SuccessServer {
 fn kill(child: &mut ChildGuard) {
     child.kill().unwrap();
     assert!(!child.wait().unwrap().success());
-    child.0.take();
 }
 
 fn wait_for_marker(child: &mut Child, marker: &Path) {
@@ -719,7 +654,7 @@ impl FreshCaller {
     }
 
     fn run(&self, action: &str, arguments: &[&str]) -> Value {
-        let output = self.command(action, arguments).output().unwrap();
+        let output = ChildGuard::output(&mut self.command(action, arguments)).unwrap();
         assert!(
             output.status.success(),
             "caller {action}: {:?}; stdout: {}; stderr: {}",
@@ -782,7 +717,7 @@ fn mcp_caller_loss_preserves_reference_and_service_admission() {
     ack_rx.recv_timeout(FIXTURE_TIMEOUT).unwrap();
     assert!(fresh.reference.exists());
     kill(&mut caller);
-    let second_start = fresh.command("start", &["process-op"]).output().unwrap();
+    let second_start = ChildGuard::output(&mut fresh.command("start", &["process-op"])).unwrap();
     assert_eq!(second_start.status.code(), Some(4));
     release_tx.send(()).unwrap();
     proxy.join().unwrap();
@@ -794,120 +729,32 @@ fn mcp_caller_loss_preserves_reference_and_service_admission() {
 }
 
 #[test]
-fn ordinary_startup_rejects_every_nonexact_or_active_socket_without_unlinking() {
-    for (name, kind) in [
-        ("regular", "regular"),
-        ("directory", "directory"),
-        ("symlink", "symlink"),
-        ("wrong-mode", "wrong-mode"),
-        ("linked", "linked"),
-        ("active", "active"),
-    ] {
-        let root = installation_root(name);
-        let socket = root.join("run/kapsel/kapseld.sock");
-        let mut active = None;
-        match kind {
-            "regular" => private_file(&socket, b"not a socket"),
-            "directory" => fs::create_dir(&socket).unwrap(),
-            "symlink" => {
-                let target = root.join("run/kapsel/target");
-                private_file(&target, b"target");
-                std::os::unix::fs::symlink(target, &socket).unwrap();
-            },
-            "wrong-mode" => {
-                let listener = StdUnixListener::bind(&socket).unwrap();
-                fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).unwrap();
-                drop(listener);
-            },
-            "linked" => {
-                let listener = StdUnixListener::bind(&socket).unwrap();
-                fs::set_permissions(&socket, fs::Permissions::from_mode(0o660)).unwrap();
-                drop(listener);
-                fs::hard_link(&socket, root.join("run/kapsel/linked.sock")).unwrap();
-            },
-            "active" => {
-                let listener = StdUnixListener::bind(&socket).unwrap();
-                fs::set_permissions(&socket, fs::Permissions::from_mode(0o660)).unwrap();
-                active = Some(listener);
-            },
-            _ => unreachable!(),
-        }
-        let before = fs::symlink_metadata(&socket).unwrap();
-        let output = spawn_installed(&root, 1).wait_with_output().unwrap();
-        assert_eq!(output.status.code(), Some(4));
-        assert!(output.stdout.is_empty());
-        assert!(output.stderr.is_empty());
-        let after = fs::symlink_metadata(&socket).unwrap();
-        assert_eq!((after.dev(), after.ino()), (before.dev(), before.ino()));
-        drop(active);
-        fs::remove_dir_all(root).unwrap();
-    }
-}
-
-#[test]
-fn ordinary_startup_accepts_only_the_exact_ordered_arguments() {
-    let variants: [&[&str]; 5] = [
-        &[],
-        &["--operator-config", "/etc/kapsel/operator.json"],
-        &[
-            "--socket",
-            "/run/kapsel/kapseld.sock",
-            "--operator-config",
-            "/etc/kapsel/operator.json",
-        ],
-        &[
-            "--operator-config",
-            "/tmp/operator.json",
-            "--socket",
-            "/run/kapsel/kapseld.sock",
-        ],
-        &[
-            "--operator-config",
-            "/etc/kapsel/operator.json",
-            "--socket",
-            "/run/kapsel/kapseld.sock",
-            "extra",
-        ],
-    ];
-    for (index, arguments) in variants.into_iter().enumerate() {
-        let root = installation_root(&format!("arguments-{index}"));
-        let output = spawn_installed_with_arguments(&root, 1, arguments)
-            .wait_with_output()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(2));
-        assert!(output.stdout.is_empty());
-        assert_eq!(
-            output.stderr,
-            b"kapseld: invalid_usage: use kapseld --help\n"
-        );
-        assert!(!root.join("run/kapsel/kapseld.sock").exists());
-        fs::remove_dir_all(root).unwrap();
-    }
-}
-
-#[test]
-fn ordinary_startup_removes_only_an_exact_inactive_stale_socket() {
-    let root = installation_root("stale-socket");
-    let socket = root.join("run/kapsel/kapseld.sock");
-    let stale = StdUnixListener::bind(&socket).unwrap();
-    fs::set_permissions(&socket, fs::Permissions::from_mode(0o660)).unwrap();
-    drop(stale);
-
-    let child = spawn_installed(&root, 1);
-    let mut status = connect(&socket);
-    write_frame(
-        &mut status,
-        br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
+fn ordinary_startup_refuses_an_invalid_private_root_before_binding() {
+    let root = installation_root("invalid-root");
+    let state = root.join("var/lib/kapsel");
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o750)).unwrap();
+    let before = fs::metadata(&state).unwrap();
+    let output = spawn_installed(&root, 1).wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(4));
+    assert!(output.stdout.is_empty());
+    assert_eq!(output.stderr, b"kapseld: provisioning_unavailable\n");
+    assert!(!root.join("run/kapsel/kapseld.sock").exists());
+    assert!(!state.join("journal.sqlite3").exists());
+    let after = fs::metadata(&state).unwrap();
+    assert_eq!(
+        (after.dev(), after.ino(), after.mode()),
+        (before.dev(), before.ino(), before.mode())
     );
-    assert_admission_unconfirmed(&mut status);
-    assert!(child.wait_with_output().unwrap().status.success());
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn installed_startup_uses_fixed_inputs_and_retires_after_connection_limit() {
+fn ordinary_startup_rebinds_stale_socket_and_uses_fixed_inputs() {
     let root = installation_root("ordinary-startup");
     let socket = root.join("run/kapsel/kapseld.sock");
+    let stale = StdUnixListener::bind(&socket).unwrap();
+    fs::set_permissions(&socket, fs::Permissions::from_mode(0o660)).unwrap();
+    drop(stale);
     let child = spawn_installed(&root, 1);
     let mut status = connect(&socket);
     write_frame(
@@ -1006,11 +853,12 @@ fn ordinary_restart_reuses_frozen_snapshot_receipt_under_rotated_configuration()
     assert_eq!(response["receipt_hex"], expected_hex);
     assert_eq!(response["receipt_sha256"], expected_digest);
     let run_client = |destination: &Path| {
-        Command::new(env!("CARGO_BIN_EXE_kapsel-service-client"))
-            .env("KAPSELD_TEST_CLIENT_SOCKET", &socket)
-            .args(["receipt", "process-op", destination.to_str().unwrap()])
-            .output()
-            .unwrap()
+        ChildGuard::output(
+            Command::new(env!("CARGO_BIN_EXE_kapsel-service-client"))
+                .env("KAPSELD_TEST_CLIENT_SOCKET", &socket)
+                .args(["receipt", "process-op", destination.to_str().unwrap()]),
+        )
+        .unwrap()
     };
     let exported = root.join("exported.receipt");
     assert!(run_client(&exported).status.success());
@@ -1034,15 +882,16 @@ fn ordinary_restart_reuses_frozen_snapshot_receipt_under_rotated_configuration()
     if let Ok(inspector) = std::env::var("KAPSEL_TEST_INSPECT") {
         let trust_path = root.join("detached.trust");
         fs::write(&trust_path, trust).unwrap();
-        let output = Command::new(inspector)
-            .arg("inspect")
-            .arg("--receipt")
-            .arg(&exported)
-            .arg("--trust")
-            .arg(&trust_path)
-            .args(["--evaluation-time-unix-s", "150"])
-            .output()
-            .unwrap();
+        let output = ChildGuard::output(
+            Command::new(inspector)
+                .arg("inspect")
+                .arg("--receipt")
+                .arg(&exported)
+                .arg("--trust")
+                .arg(&trust_path)
+                .args(["--evaluation-time-unix-s", "150"]),
+        )
+        .unwrap();
         assert!(output.status.success());
         assert_eq!(
             serde_json::from_slice::<Value>(&output.stdout).unwrap()["status"],
@@ -1082,197 +931,5 @@ fn ordinary_restart_reuses_frozen_snapshot_receipt_under_rotated_configuration()
     assert!(!socket.exists());
     assert_eq!(fs::read(&journal).unwrap(), corrupt);
     server.finish();
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn matching_effective_gid_crosses_the_real_kapseld_process() {
-    let root = root("allow");
-    let socket = root.join("kapseld.sock");
-    let child = spawn_harness_daemon(&socket, effective_gid(), 1);
-    let mut stream = connect(&socket);
-    write_frame(
-        &mut stream,
-        br#"{"request":"get_set_deployment_image_status","operation_id":"missing"}"#,
-    );
-    let mut response = Vec::new();
-    stream.read_to_end(&mut response).unwrap();
-    assert_eq!(
-        response,
-        [
-            &(u32::try_from(br#"{"version":1,"status":"NOT_FOUND"}"#.len())
-                .unwrap()
-                .to_be_bytes())[..],
-            br#"{"version":1,"status":"NOT_FOUND"}"#,
-        ]
-        .concat()
-    );
-    let output = child.wait_with_output().unwrap();
-    assert!(output.status.success());
-    assert!(output.stdout.is_empty());
-    assert!(output.stderr.is_empty());
-    assert!(!socket.exists());
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn disconnect_identical_admission_and_reconnect_status_cross_the_real_process() {
-    let root = root("execution");
-    let socket = root.join("kapseld.sock");
-    let child = spawn_harness_daemon(&socket, effective_gid(), 4);
-
-    let mut disconnected = connect(&socket);
-    write_frame(&mut disconnected, submit_request().as_bytes());
-    drop(disconnected);
-
-    let mut status = UnixStream::connect(&socket).unwrap();
-    write_frame(
-        &mut status,
-        br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
-    );
-    assert_eq!(
-        serde_json::from_slice::<Value>(&read_frame(&mut status)).unwrap(),
-        serde_json::json!({"status":"IN_PROGRESS", "effect":"kubernetes.set_deployment_image",
-            "approved_target":null, "attempt_target":null, "observed_target":null}),
-    );
-
-    let mut competing = UnixStream::connect(&socket).unwrap();
-    write_frame(&mut competing, submit_request().as_bytes());
-    assert_admitted(&mut competing, "requested");
-
-    let mut completed = UnixStream::connect(&socket).unwrap();
-    write_frame(
-        &mut completed,
-        br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
-    );
-    assert_eq!(
-        serde_json::from_slice::<Value>(&read_frame(&mut completed)).unwrap(),
-        serde_json::json!({"status":"NOT_ATTEMPTED", "target_rejection":"DEPLOYMENT_NOT_FOUND",
-            "effect":"kubernetes.set_deployment_image", "approved_target":null,
-            "attempt_target":null, "observed_target":null})
-    );
-
-    let output = child.wait_with_output().unwrap();
-    assert!(output.status.success());
-    assert!(output.stdout.is_empty());
-    assert!(output.stderr.is_empty());
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn connection_saturation_refuses_ninth_and_admits_tenth_after_permit_release() {
-    let root = root("saturation");
-    let socket = root.join("kapseld.sock");
-    let child = spawn_harness_daemon(&socket, effective_gid(), 10);
-    let mut admitted = vec![connect(&socket)];
-    for _ in 1..8 {
-        admitted.push(UnixStream::connect(&socket).unwrap());
-    }
-    // Connections are queued in order; the ninth denial acknowledges saturation.
-    let mut ninth = UnixStream::connect(&socket).unwrap();
-    ninth
-        .set_read_timeout(Some(Duration::from_millis(500)))
-        .unwrap();
-    let mut denied = Vec::new();
-    match ninth.read_to_end(&mut denied) {
-        Ok(_) => {},
-        Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {},
-        Err(error) => panic!("unexpected saturated-peer read failure: {error}"),
-    }
-    assert!(denied.is_empty());
-
-    // EOF terminates this idle handler without spawning a storage job. The fixture's
-    // current-thread runtime releases its permit before it can accept the tenth peer.
-    let mut released = admitted.remove(0);
-    released.shutdown(Shutdown::Write).unwrap();
-    let mut closed = Vec::new();
-    released.read_to_end(&mut closed).unwrap();
-    assert!(closed.is_empty());
-    let mut tenth = UnixStream::connect(&socket).unwrap();
-    write_frame(
-        &mut tenth,
-        br#"{"request":"get_set_deployment_image_status","operation_id":"tenth"}"#,
-    );
-    tenth
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .unwrap();
-    let mut prefix = [0_u8; 4];
-    tenth.read_exact(&mut prefix).unwrap();
-    let mut response = vec![0_u8; u32::from_be_bytes(prefix) as usize];
-    tenth.read_exact(&mut response).unwrap();
-    assert_eq!(response, br#"{"version":1,"status":"NOT_FOUND"}"#);
-    drop(admitted);
-    let output = child.wait_with_output().unwrap();
-    assert!(output.status.success());
-    assert!(output.stdout.is_empty());
-    assert!(output.stderr.is_empty());
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-#[ignore = "requires an existing supplementary docker group and sg on the authorized Linux host"]
-fn distinct_effective_gid_is_denied_before_frame_read() {
-    let root = root("distinct-gid");
-    let socket = root.join("kapseld.sock");
-    let server_gid = effective_gid();
-    let client_gid = group_gid("docker");
-    assert_ne!(server_gid, client_gid);
-    let child = spawn_harness_daemon(&socket, server_gid, 2);
-    wait_for_socket(&socket);
-
-    let client = root.join("client.py");
-    fs::write(
-        &client,
-        concat!(
-            "import os, socket, time\n",
-            "assert os.getegid() == int(os.environ['KAPSELD_DISTINCT_GID'])\n",
-            "stream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n",
-            "stream.settimeout(1.0)\n",
-            "started = time.monotonic()\n",
-            "stream.connect(os.environ['KAPSELD_DISTINCT_GID_SOCKET'])\n",
-            "assert stream.recv(1) == b''\n",
-            "assert time.monotonic() - started < 1.0\n",
-        ),
-    )
-    .unwrap();
-    let command = format!("python3 {}", client.display());
-    let output = Command::new("sg")
-        .args(["docker", "-c", &command])
-        .env("KAPSELD_DISTINCT_GID", client_gid.to_string())
-        .env("KAPSELD_DISTINCT_GID_SOCKET", &socket)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "stdout={} stderr={}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let server_output = child.wait_with_output().unwrap();
-    assert!(server_output.status.success());
-    assert!(server_output.stdout.is_empty());
-    assert!(server_output.stderr.is_empty());
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn different_expected_gid_is_denied_before_body_disclosure() {
-    let root = root("deny");
-    let socket = root.join("kapseld.sock");
-    let expected_gid = effective_gid().wrapping_add(1);
-    let child = spawn_harness_daemon(&socket, expected_gid, 1);
-    let mut stream = connect(&socket);
-    let _ = stream.write_all(b"SECRET_UNAUTHENTICATED_BODY");
-    let mut response = Vec::new();
-    match stream.read_to_end(&mut response) {
-        Ok(_) => {},
-        Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {},
-        Err(error) => panic!("unexpected denied-peer read failure: {error}"),
-    }
-    assert!(response.is_empty());
-    let output = child.wait_with_output().unwrap();
-    assert!(output.status.success());
-    assert!(output.stdout.is_empty());
-    assert!(output.stderr.is_empty());
     fs::remove_dir_all(root).unwrap();
 }

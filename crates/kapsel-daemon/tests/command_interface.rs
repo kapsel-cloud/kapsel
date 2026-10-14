@@ -3,6 +3,10 @@
 
 use std::{ffi::OsString, fmt::Write as _, os::unix::ffi::OsStringExt as _, process::Command};
 
+#[path = "support/child.rs"]
+mod child;
+use child::ChildGuard;
+
 const CLIENT: &str = env!("CARGO_BIN_EXE_kapsel-service-client");
 const DAEMON: &str = env!("CARGO_BIN_EXE_kapseld");
 const MCP: &str = env!("CARGO_BIN_EXE_kapsel-service-mcp");
@@ -14,11 +18,8 @@ fn discovery_needs_no_service_or_configuration() {
         (DAEMON, "kapseld"),
         (MCP, "kapsel-service-mcp"),
     ] {
-        let version = Command::new(binary)
-            .arg("--version")
-            .env_clear()
-            .output()
-            .unwrap();
+        let version =
+            ChildGuard::output(Command::new(binary).arg("--version").env_clear()).unwrap();
 
         assert!(version.status.success());
         assert_eq!(
@@ -27,11 +28,7 @@ fn discovery_needs_no_service_or_configuration() {
         );
         assert!(version.stderr.is_empty());
 
-        let help = Command::new(binary)
-            .arg("--help")
-            .env_clear()
-            .output()
-            .unwrap();
+        let help = ChildGuard::output(Command::new(binary).arg("--help").env_clear()).unwrap();
 
         assert!(help.status.success());
         assert!(String::from_utf8(help.stdout).unwrap().contains("Usage:"));
@@ -52,11 +49,8 @@ fn invalid_usage_is_bounded_and_does_not_echo_arguments() {
             ],
             vec![OsString::from_vec(vec![0xff])],
         ] {
-            let result = Command::new(binary)
-                .args(arguments)
-                .env_clear()
-                .output()
-                .unwrap();
+            let result =
+                ChildGuard::output(Command::new(binary).args(arguments).env_clear()).unwrap();
 
             assert_eq!(result.status.code(), Some(2));
             assert!(result.stdout.is_empty());
@@ -65,6 +59,42 @@ fn invalid_usage_is_bounded_and_does_not_echo_arguments() {
             assert!(!error.contains("SECRET_ARGUMENT"));
             assert!(error.len() < 128);
         }
+    }
+}
+
+#[test]
+fn daemon_rejects_nonexact_ordered_argv_without_provisioning() {
+    let variants: [&[&str]; 5] = [
+        &[],
+        &["--operator-config", "/etc/kapsel/operator.json"],
+        &[
+            "--socket",
+            "/run/kapsel/kapseld.sock",
+            "--operator-config",
+            "/etc/kapsel/operator.json",
+        ],
+        &[
+            "--operator-config",
+            "/tmp/operator.json",
+            "--socket",
+            "/run/kapsel/kapseld.sock",
+        ],
+        &[
+            "--operator-config",
+            "/etc/kapsel/operator.json",
+            "--socket",
+            "/run/kapsel/kapseld.sock",
+            "extra",
+        ],
+    ];
+    for arguments in variants {
+        let output = ChildGuard::output(Command::new(DAEMON).args(arguments).env_clear()).unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            output.stderr,
+            b"kapseld: invalid_usage: use kapseld --help\n"
+        );
     }
 }
 
@@ -110,12 +140,13 @@ mod client_failures {
                     stream.write_all(&response).unwrap();
                 })
             });
-            let output = Command::new(CLIENT)
-                .args(args)
-                .env_clear()
-                .env("KAPSELD_TEST_CLIENT_SOCKET", &socket)
-                .output()
-                .unwrap();
+            let output = ChildGuard::output(
+                Command::new(CLIENT)
+                    .args(args)
+                    .env_clear()
+                    .env("KAPSELD_TEST_CLIENT_SOCKET", &socket),
+            )
+            .unwrap();
             if let Some(server) = server {
                 server.join().unwrap();
                 fs::remove_file(socket).unwrap();

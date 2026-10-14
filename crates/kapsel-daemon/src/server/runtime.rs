@@ -162,7 +162,7 @@ impl ApplicationExecution for UnavailableExecution {
     }
 }
 
-#[cfg(any(not(target_os = "linux"), test, feature = "test-harness"))]
+#[cfg(any(not(target_os = "linux"), test))]
 pub(super) async fn serve_connections_with_state<
     R: ApplicationReads + 'static,
     E: ApplicationExecution + 'static,

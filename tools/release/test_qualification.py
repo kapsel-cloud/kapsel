@@ -143,6 +143,27 @@ class ServiceDiagnosticDrainTests(unittest.TestCase):
 
 
 class NativePreflightTests(unittest.TestCase):
+    def test_peer_denial_uses_different_effective_gid_and_supplementary_socket_access(self) -> None:
+        passed = subprocess.CompletedProcess([], 0, b"", b"")
+        with mock.patch.object(QUALIFY, "run_bounded", return_value=passed) as run:
+            QUALIFY.exercise_native_peer_denial(61001, 61000)
+        self.assertEqual(run.call_args.kwargs["user"], 61001)
+        self.assertEqual(run.call_args.kwargs["group"], 0)
+        self.assertEqual(run.call_args.kwargs["extra_groups"], [61000])
+        self.assertEqual(run.call_args.kwargs["timeout"], 5)
+        for result in (
+            subprocess.CompletedProcess([], 1, b"", b""),
+            subprocess.CompletedProcess([], 0, b"disclosed", b""),
+            subprocess.CompletedProcess([], 0, b"", b"unexpected"),
+        ):
+            with mock.patch.object(QUALIFY, "run_bounded", return_value=result):
+                with self.assertRaisesRegex(RuntimeError, "not refused before frame read"):
+                    QUALIFY.exercise_native_peer_denial(61001, 61000)
+        with mock.patch.object(QUALIFY, "run_bounded") as run:
+            with self.assertRaisesRegex(RuntimeError, "distinct effective group"):
+                QUALIFY.exercise_native_peer_denial(61001, 0)
+            run.assert_not_called()
+
     def test_native_qualification_preserves_and_refuses_dangling_enablement(self) -> None:
         for kind in ("wants", "requires", "alias", "linked-directory"):
             with (

@@ -8,13 +8,14 @@ import itertools
 import json
 import os
 import socket
+import stat
 import struct
 import subprocess
 import sys
 import tempfile
 import threading
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -175,6 +176,78 @@ class CallerCustody(unittest.TestCase):
         for identity in ("op-1", "another-id"):
             self.assertEqual(self.invoke("start", identity)[2], [])
             self.assertEqual(self.ref.read_bytes(), original)
+
+    def test_reference_persistence_failures_prevent_every_exchange_and_preserve_partial_files(self):
+        for failure in ("create", "write", "file_sync", "directory_sync"):
+            with self.subTest(failure=failure):
+                self.assert_reference_failure_prevents_exchange(failure)
+
+    def assert_reference_failure_prevents_exchange(self, failure):
+        self.ref = self.root / f"{failure}.ref"
+        operations = []
+        real_open = os.open
+        real_fdopen = os.fdopen
+        real_sync = os.fsync
+
+        def open_reference(path, flags, *args):
+            if flags & os.O_CREAT:
+                operations.append("create")
+                if failure == "create":
+                    raise OSError("injected exclusive create failure")
+            return real_open(path, flags, *args)
+
+        @contextmanager
+        def output_file(descriptor, mode):
+            with real_fdopen(descriptor, mode) as output:
+                observed = mock.Mock(wraps=output)
+
+                def write(text):
+                    operations.append("write")
+                    if failure == "write":
+                        output.write(text[:1])
+                        output.flush()
+                        raise OSError("injected write failure after partial bytes")
+                    return output.write(text)
+
+                observed.write.side_effect = write
+                yield observed
+
+        def sync(descriptor):
+            kind = "directory_sync" if stat.S_ISDIR(os.fstat(descriptor).st_mode) else "file_sync"
+            operations.append(kind)
+            if failure == kind:
+                raise OSError(f"injected {kind} failure")
+            real_sync(descriptor)
+
+        with (
+            mock.patch("os.open", side_effect=open_reference),
+            mock.patch("os.fdopen", side_effect=output_file),
+            mock.patch("os.fsync", side_effect=sync),
+        ):
+            code, _, calls = self.invoke("start", "op-1")
+
+        self.assertEqual(code, 4)
+        self.assertEqual(calls, [])
+        self.assertEqual(operations[0], "create")
+        self.assertIn(failure, operations)
+        if failure == "create":
+            self.assertFalse(self.ref.exists())
+            return
+
+        retained = self.ref.read_bytes()
+        inode = self.ref.stat().st_ino
+        self.assertTrue(retained)
+        self.assertEqual(self.ref.stat().st_mode & 0o777, 0o600)
+        if failure == "write":
+            self.assertEqual(retained, b"{")
+        else:
+            self.assertEqual(json.loads(retained)["operation_id"], "op-1")
+        for identity in ("op-1", "another-id"):
+            code, _, calls = self.invoke("start", identity)
+            self.assertEqual(code, 4)
+            self.assertEqual(calls, [])
+            self.assertEqual(self.ref.read_bytes(), retained)
+            self.assertEqual(self.ref.stat().st_ino, inode)
 
     def test_commands_bind_the_policy_without_repeated_resume_journeys(self):
         self.pin()

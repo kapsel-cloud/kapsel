@@ -254,10 +254,12 @@ crash safety, receiver semantics, release integrity or production readiness.
 
 Daemon request partitions and MCP call/reply partitions own grammar independently of transport.
 Shared literal wire vectors pin guidance, mixed-effect history with partial observations and access
-errors, and the published SHA-256 `abc` receipt example. Their complete source counts as assurance.
-Three MCP process checks bind all five ID-only requests, exact socket counts, unchanged service
-facts, distinct local failures, zero requests for invalid input and protocol-only output. The Linux
-caller-loss witness checks retained reference and admission. The public restart journey checks
+errors, and the published SHA-256 `abc` receipt example. The bridge dispatch table covers all three
+initialization phases, repeated initialization, notifications, cancellation and bounded IDs/errors.
+MCP process checks bind all five ID-only requests, exact socket counts, unchanged service facts,
+distinct local failures, zero requests before readiness or for invalid input, and protocol-only
+output. Actual stdio checks cover exact/over-limit lines, incomplete EOF and invalid UTF-8. The
+Linux caller-loss witness checks retained reference and admission. The public restart journey checks
 original-byte retrieval through MCP. Cancellation, EOF and transport completion cannot determine
 receiver outcome.
 
@@ -345,10 +347,15 @@ Service tests compose one catalog and journal around `ServiceApplication`:
 | Admission, original authority and history           | `service_application_contract`                                                           | `ADMITTED` does not prove receiver success or worker liveness                                       |
 | Independent and shared-target A/B selection         | Shared simulator; `application_retry::service_selection` for shared-target TCP preflight | Separate peer isolation from actual same-target version conflict                                    |
 | Framing, admission races, jobs and diagnostics      | Daemon protocol/runtime suites                                                           | Storage may stall beyond response deadlines                                                         |
-| Peer credentials, disconnect and read-first restart | `linux_process`                                                                          | Source process lane, not power-loss qualification                                                   |
-| Custody, publication and retirement                 | Startup/publication tests                                                                | Stable roots and cooperative launches remain host assumptions                                       |
+| Peer credentials, disconnect and read-first restart | Real-socket tests, `linux_process`, native identity profile                              | Source process lane, not power-loss qualification                                                   |
+| Custody, publication and retirement                 | Startup real-filesystem catalogue, publication sync operations and runtime schedules     | Stable roots and cooperative launches remain host assumptions                                       |
 | Unit, sysusers, RBAC and fixed argv                 | `install_assets`                                                                         | Static assets alone do not establish native installation                                            |
 | Fixed client and receipt export                     | [Client tests](../../crates/kapsel-daemon/src/bin/kapsel-service-client.rs)              | Five versioned commands; bounded framing; receipt digest verification; exclusive mode-`0600` output |
+
+The native profile checks distinct effective-GID refusal before frame read, even when supplementary
+membership permits filesystem access. Source-process tests do not establish this installed identity
+binding. The fresh-session caller injects exclusive create, partial write, file-sync and
+directory-sync failures; each prevents every exchange and preserves any newly created reference.
 
 Fixed-client tests freeze `list`, `history`, `submit`, `status` and `receipt` with version 1. They
 check receipt hex/digest agreement, refuse existing export files, and keep authority and lifecycle

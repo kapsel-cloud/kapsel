@@ -4,6 +4,9 @@ Notable changes are recorded here. Release tags retain their matching documentat
 
 ## Unreleased
 
+- The service MCP bridge ignores cancellation notifications without emitting a JSON-RPC error.
+  Cancellation does not reset initialization or cancel durable service work.
+
 - Exploration jobs now use independent output directories, explicit workload limits and reusable
   development builds. Simulation and all five fuzz targets retain exact source, executable and input
   evidence, including dirty source. Cross-run triage, lane locks and dual-root state are removed;

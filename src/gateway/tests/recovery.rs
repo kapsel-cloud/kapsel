@@ -6,26 +6,6 @@ fn process_kill_child() {
     let scenario = std::env::var("KAPSEL_PROCESS_CHILD_SCENARIO").unwrap();
     let database = PathBuf::from(std::env::var_os("KAPSEL_PROCESS_DATABASE").unwrap());
     let ready = PathBuf::from(std::env::var_os("KAPSEL_PROCESS_READY").unwrap());
-    if scenario == "mutation" {
-        let patch_count = PathBuf::from(std::env::var_os("KAPSEL_PROCESS_PATCH_COUNT").unwrap());
-        let mut gateway = Gateway::open_for_test(&database).unwrap();
-
-        let mut adapter = ProcessMutationAdapter {
-            ready_path: ready,
-            patch_count_path: patch_count,
-        };
-        tokio::runtime::Builder::new_current_thread()
-            .enable_time()
-            .build()
-            .unwrap()
-            .block_on(gateway.run_operation_once_with_adapter_and_fault(
-                "op-001",
-                &mut adapter,
-                None,
-            ))
-            .unwrap();
-        unreachable!("the parent must kill the child while apply is pending");
-    }
     if scenario == "hot_rollback" {
         // Opening must recover genuinely hot history, not only an unused zero-header journal.
         // This external fixture spills an uncommitted edit; owned writes still disable spilling.
@@ -71,49 +51,6 @@ fn process_kill_child() {
     loop {
         std::thread::park();
     }
-}
-
-#[tokio::test]
-async fn process_kill_after_provider_side_effect_recovers_without_second_mutation() {
-    let path = database_path("process-kill-mutation");
-    let request = request();
-    {
-        let gateway = Gateway::open_for_test(&path).unwrap();
-        gateway
-            .submit_exact_for_test(&request, &authorization(&request))
-            .unwrap();
-    }
-    let ready = path.parent().unwrap().join("mutation-ready");
-    let patch_count = path.parent().unwrap().join("patch-count");
-    let mut child = spawn_process_child("mutation", &path, &ready, Some(&patch_count));
-    wait_for_child_seam(&mut child, &ready);
-    assert_eq!(fs::read_to_string(&patch_count).unwrap(), "1");
-    kill_child(&mut child);
-
-    let mut gateway = Gateway::open_for_test(&path).unwrap();
-    assert_eq!(
-        gateway.get(&request.operation_id).unwrap(),
-        Some(OperationState::ApplyStarted)
-    );
-    let mut recovery_adapter = failed_rollout_adapter(&path, &request);
-    assert_eq!(
-        gateway
-            .run_operation_once_with_adapter(&request.operation_id, &mut recovery_adapter)
-            .await
-            .unwrap(),
-        Some(OperationState::ReceiverObserved)
-    );
-    assert_eq!(recovery_adapter.identify_calls, 0);
-    assert_eq!(recovery_adapter.apply_calls, 0);
-    assert_eq!(recovery_adapter.observe_calls, 1);
-    assert_eq!(fs::read_to_string(&patch_count).unwrap(), "1");
-    assert_eq!(
-        gateway.result(&request.operation_id).unwrap(),
-        Some(OperationResult::Failed)
-    );
-
-    drop(gateway);
-    fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
 
 #[tokio::test]

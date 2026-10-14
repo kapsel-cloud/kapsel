@@ -1,4 +1,6 @@
 //! Real daemon diagnostic wiring and nonblocking sink retirement; application laws own guidance.
+use std::process::Output;
+
 use super::*;
 
 #[test]

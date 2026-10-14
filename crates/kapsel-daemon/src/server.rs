@@ -1,7 +1,5 @@
 //! Fixed startup and the narrow bridge to the accepted Application interface.
 
-#[cfg(all(target_os = "linux", feature = "test-harness"))]
-mod harness;
 mod protocol;
 mod runtime;
 
@@ -150,10 +148,6 @@ impl ApplicationExecution for ExecutionApplication {
 pub(crate) fn run(replace: bool) -> ExitCode {
     #[cfg(target_os = "linux")]
     {
-        #[cfg(feature = "test-harness")]
-        if std::env::var_os("KAPSELD_TEST_SOCKET").is_some() {
-            return harness::run();
-        }
         run_installed(replace)
     }
     #[cfg(not(target_os = "linux"))]

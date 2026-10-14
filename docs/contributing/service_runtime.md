@@ -81,6 +81,13 @@ refuses contention rather than replacing configuration while old work survives.
 physical job after aborting its supervisor. It checks that both permits remain unavailable until the
 job is released. A response timeout alone would not show that the permits stay held.
 
+`abort_before_supervisor_poll_retires_registration_and_both_permits_without_work` cancels a
+registered supervisor before it can enqueue work. No closure runs, both permits retire, and drain
+finishes. The bounded lifecycle schedules also occupy the real blocking pool, enqueue selected work,
+then abort its supervisor before the closure starts. The queued closure retains its lease, executes
+only after release and drains before another explicitly selected peer proceeds. These observations
+establish physical ownership and conditional progress, not a queue or fairness guarantee.
+
 Lifecycle exclusion must also survive supervisor retirement while physical work remains. In
 [`retirement_tests.rs`](../../crates/kapsel-daemon/src/server/runtime/retirement_tests.rs),
 `sigterm_retains_blocked_storage_and_lease_until_ordered_retirement` holds storage work across

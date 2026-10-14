@@ -133,7 +133,7 @@ def run_bounded(
         returncode = process.wait(timeout=remaining)
     except BaseException:
         process.kill()
-        process.wait()
+        process.wait(timeout=2)
         raise
     finally:
         selector.close()
@@ -837,6 +837,30 @@ class InstalledService:
                 raise RuntimeError("direct service did not retire gracefully")
 
 
+def exercise_native_peer_denial(caller_uid: int, caller_gid: int) -> None:
+    """Supplementary membership permits connect, but cannot authorize frame access."""
+    if caller_gid == 0:
+        raise RuntimeError("native peer witness requires a distinct effective group")
+    probe = (
+        "import os,socket,sys; "
+        "assert os.getegid()==0 and int(sys.argv[1]) in os.getgroups(); "
+        "peer=socket.socket(socket.AF_UNIX); peer.settimeout(1); "
+        "peer.connect('/run/kapsel/kapseld.sock'); "
+        "assert peer.recv(1)==b''"
+    )
+    refused = run_bounded(
+        [sys.executable, "-I", "-c", probe, str(caller_gid)],
+        user=caller_uid,
+        group=0,
+        extra_groups=[caller_gid],
+        stdout_max=1024,
+        stderr_max=4096,
+        timeout=5,
+    )
+    if refused.returncode or refused.stdout or refused.stderr:
+        raise RuntimeError("native distinct-effective-GID peer was not refused before frame read")
+
+
 def installed_service(root: pathlib.Path, metadata: dict, native: bool) -> None:
     uid, caller_uid, gid = install(root, native)
     guide = (root / GUIDE).read_text()
@@ -930,6 +954,8 @@ def installed_service(root: pathlib.Path, metadata: dict, native: bool) -> None:
             socket = pathlib.Path("/run/kapsel/kapseld.sock").stat()
             if (stat.S_IMODE(socket.st_mode), socket.st_uid, socket.st_gid) != (0o660, uid, gid):
                 raise RuntimeError("installed socket custody differs")
+            if native:
+                exercise_native_peer_denial(caller_uid, gid)
             denied = run_bounded(
                 [sys.executable, "-I", "-c", "open('/etc/kapsel/operator.json','rb')"],
                 user=caller_uid,

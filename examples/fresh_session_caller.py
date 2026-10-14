@@ -114,7 +114,7 @@ def run_bridge(input_bytes: bytes) -> bytes:
         return stdout
     except BaseException:
         process.kill()
-        process.wait()
+        process.wait(timeout=2)
         raise
     finally:
         if process.stdin is not None:
