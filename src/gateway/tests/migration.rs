@@ -63,13 +63,16 @@ fn format_six_reopens_original_history_without_rewriting_schema_rows_or_version(
 
 #[test]
 fn prior_construction_and_unknown_versions_are_refused_unchanged() {
-    for version in [1, 4, 5, 7] {
+    for version in [0_u32, 1, 2, 3, 4, 5, 7] {
         let path = database_path(&format!("version-{version}"));
-        current_journal(&path);
-        Connection::open(&path)
-            .unwrap()
+        let gateway = Gateway::open_for_test(&path).unwrap();
+        History::kube("retained-original").insert(&gateway.journal.connection, "authorized");
+        gateway
+            .journal
+            .connection
             .pragma_update(None, "user_version", version)
             .unwrap();
+        drop(gateway);
         let before = fs::read(&path).unwrap();
         assert!(matches!(
             Gateway::open_for_test(&path),

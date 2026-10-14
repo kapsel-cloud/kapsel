@@ -757,8 +757,8 @@ async fn pinned_owned_write_plans_have_no_extra_tree_mutation_pass() {
     let gateway = Gateway::open_for_test(&path).unwrap();
     assert_eq!(rusqlite::version(), "3.53.2");
     // Both effects supply the statements actually executed through atomic record I/O.
-    // The simulator requires every write kind per table, including nullable observation layouts.
-    let statements = crate::kernel_simulation_tests::executed_write_statements()
+    // The local SQLite bridge consumes every write kind, including nullable observation layouts.
+    let statements = journal::executed_write_statements()
         .await
         .into_iter()
         .map(|(_, sql)| sql);

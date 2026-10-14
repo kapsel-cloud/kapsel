@@ -3,7 +3,7 @@
 use std::{collections::BTreeMap, fmt::Write as _};
 
 use ed25519_dalek::SigningKey;
-use rusqlite::{params, types::Value, Connection};
+use rusqlite::{params, types::Value, Connection, OptionalExtension};
 use sha2::{Digest as _, Sha256};
 
 use super::{git::GitBinding, Journal};
@@ -240,6 +240,74 @@ pub(in crate::gateway) fn git_binding(id: &str) -> GitBinding {
     let bytes =
         kapsel_authority::sign_git_ref_grant(&approval, &[7; 32], "snapshot-signer").unwrap();
     GitBinding::verify(&bytes, &[trust()]).unwrap()
+}
+
+// Complete named SQL projection, independent of production column ordering and record mapping.
+pub(in crate::gateway) fn named_kube_row(
+    connection: &Connection,
+    id: &str,
+) -> BTreeMap<String, Value> {
+    let mut statement = connection
+        .prepare(
+            "SELECT operation_id, namespace, deployment, container, immutable_image_digest,
+         authorization_id, authorization_signer_key_id, authorization_grant_digest,
+         signed_authorization_grant, state, write_strategy, target_rejection,
+         target_read_failures, apply_attempted, target_uid, target_resource_version,
+         apply_accepted, requested_generation, apply_resource_version, receiver_uid,
+         receiver_image, receiver_operation_marker, current_generation, observed_generation,
+         receiver_resource_version, desired_replicas, updated_replicas, available_replicas,
+         unavailable_replicas, available_condition, progress_deadline_exceeded, result,
+         receipt_digest, receipt_bytes, receipt_key_id, rollout_condition_type,
+         rollout_condition_status, rollout_condition_reason, approved_uid,
+         approved_resource_version, preflight_uid, preflight_resource_version
+         FROM kubernetes_image_operations WHERE operation_id = ?1",
+        )
+        .unwrap();
+    let names = statement
+        .column_names()
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect::<Vec<_>>();
+    statement
+        .query_row([id], |row| {
+            names
+                .iter()
+                .enumerate()
+                .map(|(index, name)| row.get(index).map(|value| (name.clone(), value)))
+                .collect()
+        })
+        .optional()
+        .unwrap()
+        .unwrap_or_default()
+}
+
+pub(in crate::gateway) fn named_git_row(
+    connection: &Connection,
+    id: &str,
+) -> BTreeMap<String, Value> {
+    let mut statement = connection.prepare(
+        "SELECT operation_id, repository_id, ref_name, old_commit, new_commit, authorization_id,
+         authorization_signer_key_id, authorization_grant_digest, signed_authorization_grant,
+         state, target_rejection, acknowledgement, observed_ref_kind, observed_commit,
+         receipt_digest, receipt_bytes, receipt_key_id
+         FROM git_ref_operations WHERE operation_id = ?1"
+    ).unwrap();
+    let names = statement
+        .column_names()
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect::<Vec<_>>();
+    statement
+        .query_row([id], |row| {
+            names
+                .iter()
+                .enumerate()
+                .map(|(index, name)| row.get(index).map(|value| (name.clone(), value)))
+                .collect()
+        })
+        .optional()
+        .unwrap()
+        .unwrap_or_default()
 }
 
 pub(in crate::gateway) fn stored_rows(connection: &Connection) -> BTreeMap<String, Vec<Value>> {

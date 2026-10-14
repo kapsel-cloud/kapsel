@@ -304,15 +304,10 @@ mod dispatch;
 
 mod recovery;
 
-#[path = "receipt.rs"]
-mod receipt_behavior;
-
 mod capacity_layout;
 pub(super) mod storage;
 
 mod migration;
-
-mod v011_upgrade;
 
 #[path = "snapshot.rs"]
 mod snapshot_approval;

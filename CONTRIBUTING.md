@@ -17,13 +17,16 @@ provide. Check Git status and preserve unrelated work.
 ```sh
 cargo xtask setup
 cargo xtask fmt
-cargo xtask ci
+cargo xtask check
 ```
 
-Use focused tests while iterating. Run the full deterministic gate for cross-cutting code or
-contract changes and before push. Add the relevant process, live-receiver, native, or artifact lane
-from [Qualification](docs/contributing/qualification.md) when a changed guarantee needs it. Name
-missing prerequisites instead of treating a smaller passing check as equivalent.
+Use `cargo xtask test <area>` while iterating. On the finished change, use
+`cargo xtask check <area>` for an implementation within one owner with unchanged shared contracts.
+Use unscoped `check` for shared contracts, dependencies, gate wiring, or uncertain scope. Add only
+the qualification that observes a changed physical premise, as described in
+[Build](docs/contributing/build.md#before-review). Once that set passes, stop. CI owns merge
+enforcement; no second pre-push gate is required. Name missing prerequisites instead of treating a
+smaller passing check as equivalent.
 
 [Test strategy](docs/contributing/testing.md) explains test placement; the
 [evidence map](docs/contributing/evidence.md) identifies maintained checks. Try receiver changes in

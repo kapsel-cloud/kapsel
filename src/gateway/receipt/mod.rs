@@ -1459,6 +1459,127 @@ mod tests {
         );
     }
 
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "complete independent field table and format/trust boundaries remain together"
+    )]
+    fn snapshot_known_answers_bind_every_literal_field_and_original_bytes() {
+        let image = format!(
+            "registry.example/snapshot-worker@sha256:{}",
+            "0123456789abcdef".repeat(4)
+        );
+        let expected = ReceiptStatement {
+            approved_target: Some(ApprovedTarget {
+                uid: "approved-uid-31".into(),
+                resource_version: "opaque:0047".into(),
+            }),
+            operation_id: "snapshot-op-23".into(),
+            authorization_id: "snapshot-auth-17".into(),
+            authorization_signer_key_id: "snapshot-owner-key".into(),
+            authorization_grant_digest:
+                "de65cf5b10d5f4ed0477f15b4d4d6a31f829fb31d9deb689493734784b863fa5".into(),
+            namespace: "snapshot-demo".into(),
+            deployment: "snapshot-worker".into(),
+            container: "worker".into(),
+            immutable_image_digest: image.clone(),
+            write_strategy: "conditional-strategic-merge-patch".into(),
+            target_uid: "approved-uid-31".into(),
+            target_resource_version: "opaque:0047".into(),
+            receiver_uid: Some("approved-uid-31".into()),
+            observed_image: Some(image),
+            observed_operation_marker: Some("snapshot-op-23".into()),
+            current_generation: Some(53),
+            requested_generation: Some(59),
+            observed_generation: Some(61),
+            observed_resource_version: Some("observed:0067".into()),
+            desired_replicas: Some(3),
+            updated_replicas: Some(5),
+            available_replicas: Some(7),
+            unavailable_replicas: Some(11),
+            rollout_condition_type: None,
+            rollout_condition_status: None,
+            rollout_condition_reason: None,
+            result: OperationResult::Unknown,
+        };
+        let fixed_statement =
+            vector_bytes(include_str!("../../../vectors/snapshot-statement-v3.hex"));
+        let fixed_receipt = vector_bytes(include_str!("../../../vectors/snapshot-receipt-v3.hex"));
+        let fixed_trust = vector_bytes(include_str!("../../../vectors/snapshot-trust-v3.hex"));
+        let expected_trust = ReceiptTrust {
+            key_id: "snapshot-receipt-key".into(),
+            public_key: SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes(),
+            accepted_purpose: "kapsel.kap0038.kubernetes-effect-receipt.v3".into(),
+            not_before_unix_s: 101,
+            not_after_unix_s: 211,
+        };
+        assert_eq!(expected.encode().unwrap(), fixed_statement);
+        assert_eq!(
+            ReceiptStatement::parse(&fixed_statement, InspectionLimits::default()).unwrap(),
+            expected
+        );
+        assert_eq!(
+            sign_statement(&expected, &[9; 32], "snapshot-receipt-key").unwrap(),
+            fixed_receipt
+        );
+        assert_eq!(expected_trust.encode().unwrap(), fixed_trust);
+        assert_eq!(
+            hex(&Sha256::digest(&fixed_receipt)),
+            include_str!("../../../vectors/snapshot-receipt-v3.sha256").trim()
+        );
+        for (time, status) in [
+            (100, InspectionStatus::UntrustedSigner),
+            (101, InspectionStatus::Inspected),
+            (210, InspectionStatus::Inspected),
+            (211, InspectionStatus::UntrustedSigner),
+        ] {
+            let report = inspect_receipt(
+                &fixed_receipt,
+                &fixed_trust,
+                time,
+                InspectionLimits::default(),
+            );
+            assert_eq!(report.status(), status, "explicit time {time}");
+            assert_eq!(report.statement(), Some(&expected));
+        }
+        let mut legacy_trust = expected_trust;
+        legacy_trust.accepted_purpose = "kapsel.kap0038.kubernetes-effect-receipt.v2".into();
+        assert_eq!(
+            inspect_receipt(
+                &fixed_receipt,
+                &legacy_trust.encode().unwrap(),
+                150,
+                InspectionLimits::default()
+            )
+            .status(),
+            InspectionStatus::UntrustedSigner
+        );
+        let mut legacy_envelope = fixed_receipt;
+        legacy_envelope[..RECEIPT_MAGIC.len()].copy_from_slice(RECEIPT_MAGIC);
+        assert_eq!(
+            inspect_receipt(
+                &legacy_envelope,
+                &fixed_trust,
+                150,
+                InspectionLimits::default()
+            )
+            .status(),
+            InspectionStatus::StructureRejected
+        );
+    }
+
+    fn vector_bytes(text: &str) -> Vec<u8> {
+        let (pairs, remainder) = text.trim().as_bytes().as_chunks::<2>();
+        assert!(
+            remainder.is_empty(),
+            "fixed hex vector contains complete bytes"
+        );
+        pairs
+            .iter()
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect()
+    }
+
     fn hex(bytes: &[u8]) -> String {
         let mut output = String::with_capacity(bytes.len() * 2);
         for byte in bytes {

@@ -154,7 +154,75 @@ impl ServiceStop {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gateway::{GatewayError, ReconciliationBlockage, ReconciliationError};
+    use crate::gateway::{
+        GatewayError, ReconciliationBlockage, ReconciliationError, TargetRejection,
+    };
+
+    #[test]
+    fn every_status_and_process_observation_has_independent_guidance() {
+        use ExecutionCondition as C;
+        use ExecutionDisposition as D;
+        use ExecutionObservation as O;
+
+        let observations = [
+            (O::Unknown, D::ResumeRequired(None)),
+            (O::Active, D::Active),
+            (O::OtherWorker, D::WaitingForWorker),
+            (
+                O::Stopped(C::PreflightUnavailable),
+                D::ResumeRequired(Some(C::PreflightUnavailable)),
+            ),
+            (
+                O::Stopped(C::WorkerContention),
+                D::ResumeRequired(Some(C::WorkerContention)),
+            ),
+            (
+                O::Stopped(C::ReceiverUnavailable),
+                D::OperatorRequired(C::ReceiverUnavailable),
+            ),
+            (
+                O::Stopped(C::SigningUnavailable),
+                D::OperatorRequired(C::SigningUnavailable),
+            ),
+            (
+                O::Stopped(C::CompletionBlocked),
+                D::OperatorRequired(C::CompletionBlocked),
+            ),
+            (
+                O::Stopped(C::OperationBlocked),
+                D::OperatorRequired(C::OperationBlocked),
+            ),
+        ];
+        for (status, fixed) in [
+            (OperationStatus::NotFound, Some(D::AdmissionUnconfirmed)),
+            (OperationStatus::InProgress, None),
+            (OperationStatus::Succeeded, Some(D::Complete)),
+            (OperationStatus::Failed, Some(D::Complete)),
+            (OperationStatus::Unknown, Some(D::Complete)),
+            (
+                OperationStatus::NotAttempted(TargetRejection::StaleApproval),
+                Some(D::Complete),
+            ),
+        ] {
+            for (observation, unfinished) in observations {
+                assert_eq!(D::project(status, observation), fixed.unwrap_or(unfinished));
+            }
+        }
+        for rejection in [
+            TargetRejection::DeploymentNotFound,
+            TargetRejection::ContainerNotFound,
+            TargetRejection::InvalidTarget,
+            TargetRejection::GitStaleRef,
+            TargetRejection::GitInvalidObjects,
+        ] {
+            for (observation, _) in observations {
+                assert_eq!(
+                    D::project(OperationStatus::NotAttempted(rejection), observation),
+                    D::Complete
+                );
+            }
+        }
+    }
 
     #[test]
     fn disposition_guidance_names_the_next_action_and_owner() {

@@ -21,6 +21,11 @@ TAPLO="$TAPLO_HOME/bin/taplo"
 SHFMT="$RUFF_HOME/bin/shfmt"
 SHELLCHECK="$RUFF_HOME/bin/shellcheck"
 
+resolve_test_git() {
+  KAPSEL_TEST_GIT=$(python3 tools/dev/resolve_git.py) || return 1
+  export KAPSEL_TEST_GIT
+}
+
 check_type_checker() {
   if [ "$("$PYRIGHT" --version 2>/dev/null || :)" != "pyright $PYRIGHT_VERSION" ]; then
     printf 'Pyright unavailable or mismatched: expected %s\n' "$PYRIGHT_VERSION" >&2

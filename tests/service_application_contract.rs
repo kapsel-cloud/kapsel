@@ -77,6 +77,10 @@ fn offline() -> ServiceExecution {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "callback SQL visibility, physical lease and reopened public facts share one witness"
+)]
 async fn admission_callback_sees_committed_grant_and_physical_lease_for_both_effects() {
     for git in [false, true] {
         let root = root(&format!("admission-{git}"));
@@ -85,7 +89,7 @@ async fn admission_callback_sees_committed_grant_and_physical_lease_for_both_eff
             config.approvals[0] = git::git_approval("a");
         }
         let grant = config.approvals[0].signed_grant.clone();
-        let mut app = ServiceApplication::open(config).unwrap();
+        let mut app = ServiceApplication::open(config.clone()).unwrap();
         let stopped = app
             .select("a", offline(), |decision| {
                 let phase = if git {
@@ -145,63 +149,283 @@ async fn admission_callback_sees_committed_grant_and_physical_lease_for_both_eff
         assert_eq!(app.admitted_state("b").unwrap(), None);
         drop(lock);
         drop(app);
+        let reopened = ServiceApplication::open(config).unwrap();
+        let expected_targets = if git {
+            kapsel::OperationTargets {
+                git: Some(kapsel::GitOperationTargets {
+                    approval: kapsel_authority::GitRefAuthorization {
+                        operation_id: "a".into(),
+                        authorization_id: "git-a".into(),
+                        repository_id: "repository-1".into(),
+                        reference: "refs/heads/approved".into(),
+                        old_commit: "a".repeat(40),
+                        new_commit: "b".repeat(40),
+                    },
+                    attempted: false,
+                    acknowledgement: None,
+                    observed_ref: None,
+                }),
+                ..kapsel::OperationTargets::default()
+            }
+        } else {
+            kapsel::OperationTargets {
+                approved_target: Some(ApprovedTarget {
+                    uid: "uid".into(),
+                    resource_version: "1".into(),
+                }),
+                ..kapsel::OperationTargets::default()
+            }
+        };
+        assert_eq!(
+            reopened.status("a").unwrap(),
+            (OperationStatus::InProgress, expected_targets)
+        );
+        assert_eq!(
+            reopened.admitted_state("a").unwrap(),
+            Some(OperationState::Authorized)
+        );
+        assert_eq!(
+            reopened.receipt("a").unwrap(),
+            kapsel::OperationReceipt::NotReady
+        );
+        assert_eq!(reopened.admitted_state("b").unwrap(), None);
+        drop(reopened);
         fs::remove_dir_all(root).unwrap();
     }
 }
 
-#[tokio::test]
-async fn pagination_crosses_the_sql_page_boundary_without_hiding_inaccessible_ids() {
-    let root = root("pages");
-    let mut config = configuration(&root);
-    config.approvals = (0..10)
-        .rev()
-        .map(|n| approval(&format!("operation-{n:02}"), 41))
-        .collect();
-    config.authorization_trust = (0..10)
-        .map(|n| trust(&format!("operation-{n:02}"), 41))
-        .collect();
-    let mut app = ServiceApplication::open(config.clone()).unwrap();
-    for n in (0..10).rev() {
-        app.select(&format!("operation-{n:02}"), offline(), |_| {})
-            .await
-            .unwrap();
-    }
-    drop(app);
-    config.approvals.clear();
-    config.authorization_trust.remove(0);
-    let app = ServiceApplication::open(config).unwrap();
-    let first = app.history(None).unwrap();
-    assert_eq!(first.entries.len(), 8);
-    assert_eq!(
-        first.entries[0].status,
-        Err(ServiceError::AuthorityUnavailable)
-    );
-    assert_eq!(first.next_cursor.as_deref(), Some("operation-07"));
-    let second = app.history(first.next_cursor.as_deref()).unwrap();
-    assert_eq!(
-        second
-            .entries
+const BINARY_IDS: [&str; 19] = [
+    "Operation-04",
+    "operation-00",
+    "operation-01",
+    "operation-02",
+    "operation-03",
+    "operation-05",
+    "operation-06",
+    "operation-07",
+    "operation-08",
+    "operation-09",
+    "operation-10",
+    "operation-11",
+    "operation-12",
+    "operation-13",
+    "operation-14",
+    "operation-15",
+    "operation-16",
+    "operation-17",
+    "operation-18",
+];
+
+// Operator order and effect are independent of SQL's binary lexical order.
+const CATALOGUE: [(&str, bool); 19] = [
+    ("operation-09", true),
+    ("operation-02", false),
+    ("operation-17", true),
+    ("operation-00", false),
+    ("operation-12", false),
+    ("operation-07", true),
+    ("operation-01", true),
+    ("operation-16", false),
+    ("Operation-04", true),
+    ("operation-13", true),
+    ("operation-08", false),
+    ("operation-18", false),
+    ("operation-03", true),
+    ("operation-10", false),
+    ("operation-15", true),
+    ("operation-06", false),
+    ("operation-11", true),
+    ("operation-05", true),
+    ("operation-14", false),
+];
+
+fn mixed_configuration(root: &Path, count: usize) -> ServiceConfiguration {
+    let retained = &BINARY_IDS[..count];
+    ServiceConfiguration {
+        journal_path: root.join("journal.sqlite3"),
+        authorization_trust: retained.iter().map(|id| trust(id, 41)).collect(),
+        approvals: CATALOGUE
             .iter()
-            .map(|e| e.operation_id.as_str())
-            .collect::<Vec<_>>(),
-        ["operation-08", "operation-09"]
-    );
-    assert!(second.next_cursor.is_none());
-    assert!(app
-        .history(Some("operation-09"))
-        .unwrap()
-        .entries
-        .is_empty());
-    assert_eq!(
-        app.history(Some("invalid\n")),
-        Err(ServiceError::InvalidRequest)
-    );
-    assert_eq!(
-        app.status("operation-01").unwrap().0,
-        OperationStatus::InProgress
-    );
-    drop(app);
-    fs::remove_dir_all(root).unwrap();
+            .filter(|(id, _)| retained.contains(id))
+            .map(|(id, git)| {
+                let mut item = if *git {
+                    git::git_approval_with_key(id, id)
+                } else {
+                    approval(id, 41)
+                };
+                item.label = format!("label-{id}");
+                item
+            })
+            .collect(),
+    }
+}
+
+#[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "page concatenation, binary cursor and boundary-disclosure witnesses stay together"
+)]
+async fn pagination_crosses_the_sql_page_boundary_without_hiding_inaccessible_ids() {
+    for count in [0, 8, 16, 19] {
+        let root = root(&format!("pages-{count}"));
+        let mut config = mixed_configuration(&root, count);
+        let mut app = ServiceApplication::open(config.clone()).unwrap();
+        for (id, _) in CATALOGUE
+            .iter()
+            .filter(|(id, _)| BINARY_IDS[..count].contains(id))
+        {
+            app.select(id, offline(), |_| {}).await.unwrap();
+        }
+        drop(app);
+        let before = fs::read(root.join("journal.sqlite3")).unwrap();
+        config.approvals.clear();
+        let inaccessible = ["operation-07", "operation-08", "operation-16"];
+        config
+            .authorization_trust
+            .retain(|key| !inaccessible.contains(&key.key_id.as_str()));
+        let app = ServiceApplication::open(config).unwrap();
+        let expected = &BINARY_IDS[..count];
+        let mut collected = Vec::new();
+        let mut cursor = None;
+        loop {
+            let page = app.history(cursor.as_deref()).unwrap();
+            let end = (collected.len() + 8).min(count);
+            let expected_page = &expected[collected.len()..end];
+            assert_eq!(
+                page.entries
+                    .iter()
+                    .map(|entry| entry.operation_id.as_str())
+                    .collect::<Vec<_>>(),
+                expected_page
+            );
+            assert!(page.entries.len() <= 8);
+            for entry in &page.entries {
+                if inaccessible.contains(&entry.operation_id.as_str()) {
+                    assert_eq!(entry.status, Err(ServiceError::AuthorityUnavailable));
+                    assert_eq!(
+                        app.receipt(&entry.operation_id),
+                        Err(ServiceError::AuthorityUnavailable)
+                    );
+                } else {
+                    let (status, targets) = entry.status.as_ref().unwrap();
+                    assert_eq!(*status, OperationStatus::InProgress);
+                    let git = CATALOGUE
+                        .iter()
+                        .find(|(id, _)| *id == entry.operation_id)
+                        .unwrap()
+                        .1;
+                    assert_eq!(targets.git.is_some(), git);
+                }
+            }
+            let expected_cursor = if end < count {
+                Some(expected[end - 1])
+            } else {
+                None
+            };
+            assert_eq!(page.next_cursor.as_deref(), expected_cursor);
+            collected.extend(page.entries.into_iter().map(|entry| entry.operation_id));
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+            assert!(collected.len() < count, "cursor requires another row");
+        }
+        assert_eq!(collected, expected);
+        let uppercase_absent = app.history(Some("OPERATION-075")).unwrap();
+        assert_eq!(
+            uppercase_absent
+                .entries
+                .iter()
+                .map(|entry| entry.operation_id.as_str())
+                .collect::<Vec<_>>(),
+            &expected[..count.min(8)],
+            "uppercase cursor sorts before every retained ID, not between 07 and 08"
+        );
+        assert_eq!(
+            uppercase_absent.next_cursor.as_deref(),
+            (count > 8).then_some("operation-07")
+        );
+        let absent = app.history(Some("operation-075")).unwrap();
+        let start = count.min(8);
+        let end = count.min(16);
+        assert_eq!(
+            absent
+                .entries
+                .iter()
+                .map(|entry| entry.operation_id.as_str())
+                .collect::<Vec<_>>(),
+            &expected[start..end]
+        );
+        assert_eq!(
+            absent.next_cursor.as_deref(),
+            (count > 16).then_some("operation-15")
+        );
+        assert!(app
+            .history(Some("operation-18"))
+            .unwrap()
+            .entries
+            .is_empty());
+        assert_eq!(
+            app.history(Some("invalid\n")),
+            Err(ServiceError::InvalidRequest)
+        );
+        drop(app);
+        assert_eq!(
+            fs::read(root.join("journal.sqlite3")).unwrap(),
+            before,
+            "collection reads do not select, sign or persist work"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn approved_actions_use_catalogue_order_and_exact_selectable_identity_cursors() {
+    for count in [0, 8, 16, 19] {
+        let root = root(&format!("catalogue-pages-{count}"));
+        let app = ServiceApplication::open(mixed_configuration(&root, count)).unwrap();
+        let before = fs::read(root.join("journal.sqlite3")).unwrap();
+        let expected = CATALOGUE
+            .iter()
+            .filter(|(id, _)| BINARY_IDS[..count].contains(id))
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        let mut collected = Vec::new();
+        let mut cursor = None;
+        loop {
+            let page = app.approved_actions(cursor.as_deref()).unwrap();
+            let end = (collected.len() + 8).min(count);
+            assert_eq!(
+                page.iter()
+                    .map(kapsel::ApprovedAction::operation_id)
+                    .collect::<Vec<_>>(),
+                &expected[collected.len()..end]
+            );
+            assert!(page.len() <= 8);
+            if page.is_empty() {
+                break;
+            }
+            cursor = page.last().map(|action| action.operation_id().to_owned());
+            collected.extend(
+                page.into_iter()
+                    .map(|action| action.operation_id().to_owned()),
+            );
+        }
+        assert_eq!(collected, expected);
+        for absent in ["operation-075", "label-operation-00", "OPERATION-00"] {
+            assert_eq!(
+                app.approved_actions(Some(absent)),
+                Err(ServiceError::InvalidRequest)
+            );
+        }
+        assert!(
+            app.history(None).unwrap().entries.is_empty(),
+            "enumeration admits nothing"
+        );
+        drop(app);
+        assert_eq!(fs::read(root.join("journal.sqlite3")).unwrap(), before);
+        fs::remove_dir_all(root).unwrap();
+    }
 }
 
 #[tokio::test]

@@ -10,12 +10,7 @@ use ed25519_dalek::SigningKey;
 use rusqlite::types::Value;
 use tokio::sync::Notify;
 
-use super::{
-    exploration::{select, trace},
-    laws::*,
-    trace::*,
-    world::*,
-};
+use super::{laws::*, trace::*, world::*};
 use crate::{
     application::{
         ExecutionCondition, ServiceAdmission, ServiceApplication, ServiceConfiguration,
@@ -50,14 +45,6 @@ pub(super) async fn replay_report(trace: &Trace, virtualized: bool) -> (Checked,
     report.writes = control.events();
     report.consumed_cuts = control.consumed_cuts();
     (result, report)
-}
-
-pub(super) async fn replay_with_control(
-    trace: &Trace,
-    virtualized: bool,
-    control: StorageControl,
-) -> Checked {
-    drive(trace, virtualized, control, &mut RunReport::default()).await
 }
 
 #[allow(
@@ -147,21 +134,13 @@ async fn drive(
                 report.requested_cuts += usize::from(!matches!(selection.cut, Cut::None));
                 report.requested_response_losses += usize::from(selection.lose_response);
                 let peers_before = peers.iter().map(Peer::snapshot).collect::<Vec<_>>();
-                let write_refused_rows_before = (!writing).then(|| {
-                    peers
-                        .iter()
-                        .map(|peer| peer.snapshot().record)
-                        .collect::<Vec<_>>()
-                });
                 let must_preserve_history = !trusted[selected]
                     || (selection.sign
                         && matches!(peers[selected].signer, Signer::Invalid)
                         && matches!(
-                            text(&peers[selected].snapshot().record, "state"),
+                            text(&peers_before[selected].record, "state"),
                             Some("receiver_observed" | "finalized")
                         ));
-                let protected_history_before = must_preserve_history
-                    .then(|| peers.iter().map(Peer::snapshot).collect::<Vec<_>>());
 
                 let peer = &mut peers[selected];
                 let signing = peer.signing_material();
@@ -194,52 +173,49 @@ async fn drive(
                         .execute(&mut app, adapter, &mut peer.checker, signing, event)
                         .await?;
                 }
-                let after = peers[selected].snapshot();
+                let peers_after = peers.iter().map(Peer::snapshot).collect::<Vec<_>>();
                 report.consumed_response_losses += usize::from(
-                    selection.lose_response && after.sends > peers_before[selected].sends,
+                    selection.lose_response
+                        && peers_after[selected].sends > peers_before[selected].sends,
                 );
-                report.no_op_selections += usize::from(after == peers_before[selected]);
+                report.no_op_selections +=
+                    usize::from(peers_after[selected] == peers_before[selected]);
                 selection.check_committed_delivery(
                     &peers_before[selected],
-                    &after,
+                    &peers_after[selected],
                     peers[selected].git.is_some(),
                     &control,
                     event,
                 )?;
-                if peers.iter().enumerate().any(|(index, peer)| {
-                    index != selected && peer.snapshot() != peers_before[index]
-                }) {
-                    return Err(Finding {
-                        law: "nonselected_peer_immutable",
-                        event,
-                        defect_reached: control.defect_reached(),
-                    });
+                if peers_after
+                    .iter()
+                    .enumerate()
+                    .any(|(index, after)| index != selected && *after != peers_before[index])
+                {
+                    return Err(Finding::at("nonselected_peer_immutable", event, &control));
                 }
-                if write_refused_rows_before.is_some_and(|originals| {
-                    originals
-                        != peers
-                            .iter()
-                            .map(|peer| peer.snapshot().record)
-                            .collect::<Vec<_>>()
-                }) {
-                    return Err(Finding {
-                        law: "write_refusal_preserves_history",
+                if !writing
+                    && peers_before
+                        .iter()
+                        .zip(&peers_after)
+                        .any(|(before, after)| before.record != after.record)
+                {
+                    return Err(Finding::at(
+                        "write_refusal_preserves_history",
                         event,
-                        defect_reached: control.defect_reached(),
-                    });
+                        &control,
+                    ));
                 }
-                if protected_history_before.is_some_and(|originals| {
-                    originals != peers.iter().map(Peer::snapshot).collect::<Vec<_>>()
-                }) {
-                    return Err(Finding {
-                        law: if trusted[selected] {
+                if must_preserve_history && peers_before != peers_after {
+                    return Err(Finding::at(
+                        if trusted[selected] {
                             "failed_signing_preserves_history"
                         } else {
                             "withdrawn_trust"
                         },
                         event,
-                        defect_reached: control.defect_reached(),
-                    });
+                        &control,
+                    ));
                 }
             },
             Action::Peer(peer) => {
@@ -257,13 +233,17 @@ async fn drive(
                         Receiver::Failed => Acknowledgement::ReceiverRejected,
                         _ => Acknowledgement::Unknown,
                     };
-                    state.observed = ObservedRef::Commit(
-                        if matches!(receiver, Receiver::Healthy) && state.sends > 0 {
-                            git.authorization.new_commit.clone()
-                        } else {
-                            git.authorization.old_commit.clone()
-                        },
-                    );
+                    state.observed = if matches!(receiver, Receiver::MissingFacts) {
+                        ObservedRef::Unknown
+                    } else {
+                        ObservedRef::Commit(
+                            if matches!(receiver, Receiver::Healthy) && state.sends > 0 {
+                                git.authorization.new_commit.clone()
+                            } else {
+                                git.authorization.old_commit.clone()
+                            },
+                        )
+                    };
                 }
             },
             Action::GitRef { new } => {
@@ -363,11 +343,7 @@ async fn drive(
                 if result.is_err() != expect_catalog_conflict
                     || before != peers.iter().map(Peer::snapshot).collect::<Vec<_>>()
                 {
-                    return Err(Finding {
-                        law: "catalog_identity_conflict",
-                        event,
-                        defect_reached: control.defect_reached(),
-                    });
+                    return Err(Finding::at("catalog_identity_conflict", event, &control));
                 }
                 // A refused operator configuration never replaces the running application.
             },
@@ -381,11 +357,7 @@ async fn drive(
                     .enumerate()
                     .any(|(index, peer)| index != selected && peer.snapshot() != before[index])
                 {
-                    return Err(Finding {
-                        law: "custody_after_io",
-                        event,
-                        defect_reached: control.defect_reached(),
-                    });
+                    return Err(Finding::at("custody_after_io", event, &control));
                 }
             },
             Action::CancelAtIo { point, contender } => {
@@ -408,11 +380,7 @@ async fn drive(
                 report.progress_checks += 1;
                 let peer = &mut peers[selected];
                 if !eligible(peer, trusted[selected], writing) {
-                    return Err(Finding {
-                        law: "ineligible_progress",
-                        event,
-                        defect_reached: control.defect_reached(),
-                    });
+                    return Err(Finding::at("ineligible_progress", event, &control));
                 }
                 if let Some(git) = &peer.git {
                     peer.checker
@@ -484,11 +452,11 @@ async fn drive(
             .enumerate()
             .any(|(index, peer)| !eligible(peer, trusted[index], writing))
     {
-        return Err(Finding {
-            law: "ineligible_progress",
-            event: trace.actions.len(),
-            defect_reached: control.defect_reached(),
-        });
+        return Err(Finding::at(
+            "ineligible_progress",
+            trace.actions.len(),
+            &control,
+        ));
     }
     for peer in &mut peers {
         let adapter = &peer.adapter;
@@ -553,11 +521,11 @@ impl Peer {
         let suspended =
             std::future::poll_fn(|cx| Poll::Ready(execution.as_mut().poll(cx).is_pending())).await;
         if !suspended {
-            return Err(Finding {
-                law: "custody_cut_not_reached",
+            return Err(Finding::at(
+                "custody_cut_not_reached",
                 event,
-                defect_reached: store.control.defect_reached(),
-            });
+                &store.control,
+            ));
         }
 
         let original = store.raw_effect(&id, git);
@@ -583,11 +551,7 @@ impl Peer {
 
         store.set_grant(&id, git, original["signed_authorization_grant"].clone());
         if !refused {
-            return Err(Finding {
-                law: "custody_after_io",
-                event,
-                defect_reached: store.control.defect_reached(),
-            });
+            return Err(Finding::at("custody_after_io", event, &store.control));
         }
         Ok(())
     }
@@ -624,25 +588,7 @@ pub(super) async fn cancel_at_io(
     let snapshots = || {
         views
             .iter()
-            .map(|(adapter, git)| {
-                let (reads, sends) = git.as_ref().map_or_else(
-                    || {
-                        let io = adapter.io.lock().unwrap();
-                        (io.reads, io.sends.len())
-                    },
-                    |state| {
-                        let io = state.lock().unwrap();
-                        (io.reads, io.sends)
-                    },
-                );
-                PeerSnapshot {
-                    record: adapter
-                        .store
-                        .raw_effect(&adapter.intent.request.operation_id, git.is_some()),
-                    reads,
-                    sends,
-                }
-            })
+            .map(|(adapter, git)| adapter.snapshot(git.as_deref()))
             .collect::<Vec<_>>()
     };
 
@@ -676,11 +622,7 @@ pub(super) async fn cancel_at_io(
     let parked =
         std::future::poll_fn(|cx| Poll::Ready(active.as_mut().poll(cx).is_pending())).await;
     if !parked {
-        return Err(Finding {
-            law: "cancellation_cut_not_reached",
-            event,
-            defect_reached: control.defect_reached(),
-        });
+        return Err(Finding::at("cancellation_cut_not_reached", event, &control));
     }
 
     let pending = snapshots();
@@ -724,11 +666,7 @@ pub(super) async fn cancel_at_io(
         || after[selected].reads != expected_reads
         || after[selected].sends != expected_sends
     {
-        return Err(Finding {
-            law: "worker_exclusion",
-            event,
-            defect_reached: control.defect_reached(),
-        });
+        return Err(Finding::at("worker_exclusion", event, &control));
     }
     if let Some(git) = &peers[selected].git {
         *git.durable_ack.lock().unwrap() =
@@ -777,11 +715,7 @@ impl Selection {
             || writes.contains(&StorageWrite::Observation) != expect_observation_record
             || writes.contains(&StorageWrite::Receipt)
         {
-            return Err(Finding {
-                law: "checkpoint_not_reached",
-                event,
-                defect_reached: control.defect_reached(),
-            });
+            return Err(Finding::at("checkpoint_not_reached", event, control));
         }
         Ok(())
     }
@@ -838,11 +772,7 @@ impl Selection {
             )
             .await;
         if let Some(law) = git.script.state.lock().unwrap().violation {
-            return Err(Finding {
-                law,
-                event,
-                defect_reached: control.defect_reached(),
-            });
+            return Err(Finding::at(law, event, control));
         }
         if fresh_cut {
             let io = git.script.state.lock().unwrap();
@@ -863,11 +793,11 @@ impl Selection {
                 && io.ref_after_send
                     != Some(ObservedRef::Commit(git.authorization.new_commit.clone()))
             {
-                return Err(Finding {
-                    law: "git_lost_response_preserves_update",
+                return Err(Finding::at(
+                    "git_lost_response_preserves_update",
                     event,
-                    defect_reached: control.defect_reached(),
-                });
+                    control,
+                ));
             }
         }
         let reached = control.reached();
@@ -946,11 +876,7 @@ impl Selection {
                         "state",
                     ) != Some("apply_started"))
             {
-                return Err(Finding {
-                    law: "apply_error_stops",
-                    event,
-                    defect_reached: control.defect_reached(),
-                });
+                return Err(Finding::at("apply_error_stops", event, &control));
             }
         }
         if fresh_cut {
@@ -1061,11 +987,7 @@ impl Selection {
             || !delivered_fields
             || (after.reads - before.reads, after.sends - before.sends) != expected_io
         {
-            return Err(Finding {
-                law: "committed_delivery_binding",
-                event,
-                defect_reached: control.defect_reached(),
-            });
+            return Err(Finding::at("committed_delivery_binding", event, control));
         }
         Ok(())
     }
@@ -1092,98 +1014,6 @@ impl Selection {
         } else {
             None
         };
-        law.map_or(Ok(()), |law| {
-            Err(Finding {
-                law,
-                event,
-                defect_reached: control.defect_reached(),
-            })
-        })
+        law.map_or(Ok(()), |law| Err(Finding::at(law, event, control)))
     }
-}
-
-pub(crate) async fn executed_write_statements() -> Vec<(StorageWrite, String)> {
-    let mut statements = Vec::new();
-    for receiver in [
-        Receiver::Healthy,
-        Receiver::Failed,
-        Receiver::Pending,
-        Receiver::Replaced,
-    ] {
-        let control = StorageControl::default();
-        let input = trace(
-            0,
-            vec![
-                Action::Receiver(receiver),
-                select(None, Cut::None, false, true),
-            ],
-        );
-        assert_eq!(
-            replay_with_control(&input, false, control.clone()).await,
-            Ok(())
-        );
-        statements.extend(control.executed_sql());
-    }
-    for prefix in [
-        vec![select(None, Cut::None, false, true)],
-        vec![
-            Action::Receiver(Receiver::Failed),
-            select(None, Cut::None, false, true),
-        ],
-        vec![
-            Action::Receiver(Receiver::Replaced),
-            select(None, Cut::None, false, true),
-        ],
-        vec![
-            select(None, Cut::Unsent, false, false),
-            Action::Receiver(Receiver::Unavailable),
-            select(None, Cut::Frozen, false, false),
-        ],
-    ] {
-        let control = StorageControl::default();
-        let mut input = trace(0, prefix);
-        input.effects = vec![Effect::Git];
-        assert_eq!(
-            replay_with_control(&input, false, control.clone()).await,
-            Ok(())
-        );
-        statements.extend(control.executed_sql());
-    }
-    for (table, writes) in [
-        (
-            "kubernetes_image_operations",
-            vec![
-                StorageWrite::Admission,
-                StorageWrite::Authorization,
-                StorageWrite::Rejection,
-                StorageWrite::Attempt,
-                StorageWrite::Response,
-                StorageWrite::Observation,
-                StorageWrite::Receipt,
-            ],
-        ),
-        (
-            "git_ref_operations",
-            vec![
-                StorageWrite::Admission,
-                StorageWrite::Rejection,
-                StorageWrite::Attempt,
-                StorageWrite::Response,
-                StorageWrite::Observation,
-                StorageWrite::Receipt,
-            ],
-        ),
-    ] {
-        for write in writes {
-            assert!(
-                statements
-                    .iter()
-                    .any(|(point, sql)| *point == write && sql.contains(table)),
-                "missing {table}/{write:?} SQL"
-            );
-        }
-    }
-    statements.sort_by(|left, right| left.1.cmp(&right.1));
-    statements.dedup_by(|left, right| left.1 == right.1);
-    statements
 }

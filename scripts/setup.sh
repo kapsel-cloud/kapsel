@@ -64,6 +64,8 @@ if [ "$mode" = install ]; then
 fi
 check_formatters
 check_type_checker
+resolve_test_git
+printf 'Local Git prerequisite: %s\n' "$KAPSEL_TEST_GIT"
 # Avoid even creating rustup's home during read-only diagnosis.
 [ -d "${RUSTUP_HOME:-$HOME/.rustup}/toolchains" ] || {
   printf '%s\n' 'Rust toolchain missing. Run cargo xtask setup.' >&2

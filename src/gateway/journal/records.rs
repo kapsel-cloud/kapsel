@@ -670,16 +670,15 @@ pub(crate) enum Defect {
     InitialUnknown,
     NoOp,
     UnconditionalWrite,
+    #[serde(skip)]
     ReplicaSwap,
     WrongSigner,
     WrongPeerRead,
+    #[serde(skip)]
     ReceiptProjectionSwap,
     GitInferredAcknowledgement,
     GitObservationSubstitution,
     ReceiptRewrite,
-    StatusProjectionSwap,
-    TargetProjectionSwap,
-    DispositionProjectionSwap,
     CatalogConflictAccepted,
     StaleTrust,
     CustodyIgnored,
@@ -886,9 +885,16 @@ mod tests {
 
     #[test]
     fn oversized_optional_facts_and_grants_are_rejected_before_record_copy() {
-        for virtualized in [true, false] {
+        for (virtualized, git) in [(true, false), (false, false), (true, true), (false, true)] {
             for (field, maximum) in [
-                ("receiver_image", schema::PERSISTED_VALUE_BYTES_MAX),
+                (
+                    if git {
+                        "observed_commit"
+                    } else {
+                        "receiver_image"
+                    },
+                    schema::PERSISTED_VALUE_BYTES_MAX,
+                ),
                 ("signed_authorization_grant", 4096),
             ] {
                 let scratch = Scratch::new();
@@ -899,11 +905,41 @@ mod tests {
                     Control::default()
                 };
                 journal.control_storage(control.clone());
-                let original = record();
+                let binding = crate::gateway::journal::test_history::git_binding("atomic-binding");
+                let original = if git {
+                    let mut row = Record::git_empty("atomic-binding");
+                    for (field, value) in [
+                        ("repository_id", "repository".to_owned()),
+                        ("ref_name", "refs/heads/approved".to_owned()),
+                        ("old_commit", "a".repeat(40)),
+                        ("new_commit", "b".repeat(40)),
+                        ("authorization_id", "approval".to_owned()),
+                        ("authorization_signer_key_id", "snapshot-signer".to_owned()),
+                        (
+                            "authorization_grant_digest",
+                            crate::gateway::journal::test_history::digest(binding.signed_grant()),
+                        ),
+                        ("state", "authorized".to_owned()),
+                    ] {
+                        row.set(field, value);
+                    }
+                    row.set(
+                        "signed_authorization_grant",
+                        binding.signed_grant().to_vec(),
+                    );
+                    row
+                } else {
+                    record()
+                };
                 journal
                     .records
                     .replace(&journal.connection, None, &original, Write::Admission)
                     .unwrap();
+                if git {
+                    assert!(journal.git_operation(&binding).unwrap().is_some());
+                } else {
+                    assert!(journal.operation("atomic-binding").unwrap().is_some());
+                }
                 let value = if field == "signed_authorization_grant" {
                     Value::Blob(vec![1; maximum + 1])
                 } else {
@@ -928,18 +964,37 @@ mod tests {
                         .connection
                         .execute(
                             &format!(
-                                "UPDATE kubernetes_image_operations \
-                        SET {field} = ?1"
+                                "UPDATE {} SET {field} = ?1 WHERE operation_id = 'atomic-binding'",
+                                if git {
+                                    "git_ref_operations"
+                                } else {
+                                    "kubernetes_image_operations"
+                                }
                             ),
                             [value],
                         )
                         .unwrap();
                 }
                 assert!(matches!(
-                    journal.records.read(&journal.connection, "atomic-binding"),
+                    journal.records.read_table(
+                        &journal.connection,
+                        "atomic-binding",
+                        if git { Table::Git } else { Table::Kubernetes }
+                    ),
                     Err(GatewayError::InvalidPersistedState)
                 ));
             }
+        }
+    }
+
+    #[test]
+    fn local_mapping_controls_cannot_be_serialized_as_history_faults() {
+        for (defect, encoded) in [
+            (Defect::ReplicaSwap, "\"ReplicaSwap\""),
+            (Defect::ReceiptProjectionSwap, "\"ReceiptProjectionSwap\""),
+        ] {
+            assert!(serde_json::to_string(&defect).is_err());
+            assert!(serde_json::from_str::<Defect>(encoded).is_err());
         }
     }
 

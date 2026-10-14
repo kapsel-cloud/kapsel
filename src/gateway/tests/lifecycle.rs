@@ -2,6 +2,33 @@
 use super::*;
 
 #[test]
+fn receipt_completion_waits_for_the_other_journal_worker_lease() {
+    let scratch = journal::test_history::Scratch::new();
+    let path = scratch.0.join("journal.sqlite3");
+    let owner = Gateway::open(&path, journal::test_history::trust()).unwrap();
+    History::kube("receipt-lease").insert(&owner.journal.connection, "receiver_observed");
+    let contender = Gateway::open(&path, journal::test_history::trust()).unwrap();
+    let before = stored_rows(&owner.journal.connection);
+    let worker = owner.journal.try_lock_worker().unwrap().unwrap();
+    let settings = ReceiptSettings {
+        signing_seed: &[9; 32],
+        key_id: "snapshot-receipt-key",
+    };
+    assert_eq!(
+        contender
+            .finalize_operation_receipt_once("receipt-lease", &settings)
+            .unwrap(),
+        None
+    );
+    assert_eq!(stored_rows(&contender.journal.connection), before);
+    drop(worker);
+    assert!(contender
+        .finalize_operation_receipt_once("receipt-lease", &settings)
+        .unwrap()
+        .is_some());
+}
+
+#[test]
 fn admission_acknowledges_only_confirmed_responsibility_or_definite_refusal() {
     for committed in [false, true] {
         let path = database_path(&format!("admission-{committed}"));

@@ -7,6 +7,26 @@ evidence classes. The [evidence map](evidence.md) connects guarantees to maintai
 
 ## Choose a lane
 
+Use `cargo xtask explore sim|fuzz ...` for explicit bounded exploration and
+`cargo xtask qualify <boundary> ...` for physical or selected-artifact work. These commands route to
+the current owners below; they do not install prerequisites or assemble an implicit archive. Normal
+`check` never enters these lanes.
+
+| Boundary        | Current command arguments and owner                                                                                                                                  |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| storage         | `qualify storage`: existing ENOSPC launcher; maximal capacity remains in core until its storage cutover                                                              |
+| artifact        | `qualify artifact --archive A`: existing extracted smoke/direct-guide artifact tests                                                                                 |
+| reproducibility | `qualify reproducibility --archive A`: independently assembles B against selected A                                                                                  |
+| kubernetes      | `qualify kubernetes --archive A --revision R [--case CASE]`: current packaged runner                                                                                 |
+| git             | `qualify git --archive A --revision R --git /absolute/path/to/git [--case CASE]`: current packaged runner                                                            |
+| native          | `qualify native --archive A --revision R --extract-to NEW_DIRECTORY`: verify/extract A, then its bundled systemd profile on a separately authorized fresh Linux host |
+| security        | `qualify security --output REPORT`: existing source scan and database refresh                                                                                        |
+
+Archive-consuming commands require an existing, explicitly selected A. Receiver case reductions,
+model-subsystem retirement and final CI/candidate workflow changes belong to later cutovers. This
+router preserves the current owners and prerequisites; selecting a verb does not authorize
+publication or changes to an existing host.
+
 - Service startup or runtime: [Linux process tests](#kapsel-service-candidate).
 - Receiver rules: [Kubernetes](#live-kubernetes-gate) or [Git](#git-transition-service).
 - Storage: [accepted layouts](#accepted-journal-layouts),
@@ -258,8 +278,7 @@ custody rather than discovering it through ambient PATH. Run the core recovery m
 Linux:
 
 ```sh
-(umask 077; KAPSEL_TEST_GIT=/absolute/path/to/git \
-  cargo test --locked -p kapsel --lib gateway::git::tests -- --include-ignored --test-threads=1)
+KAPSEL_TEST_GIT=/absolute/path/to/git cargo xtask check core
 ```
 
 On Linux, exercise real service-process loss and the maintained caller through the fixed-root test
@@ -320,8 +339,9 @@ restart/reconnect evidence is required. The runners accept only the selected arc
 `--retained-archive` and `--retained-revision` are rejected before qualification setup.
 
 See the [Git service example](../guides/git_transition.md) for material, semantics and evidence
-limits. Run `cargo xtask ci` as the deterministic gate. Service startup or protocol composition
-changes also require the Linux process gate below.
+limits. Use `cargo xtask check core` for isolated core implementation changes and unscoped `check`
+for shared contracts. Linux process witnesses are included in `check service` and unscoped check,
+not an additional routine gate.
 
 ## Kapsel service candidate
 
@@ -448,7 +468,7 @@ Journal format 6 rejects older versions without migration. Run the rejection pro
 
 ```sh
 cargo test --locked -p kapsel --lib \
-  gateway::tests::v011_upgrade::older_journal_versions_are_rejected_without_touching_rows -- --exact
+  gateway::tests::migration::prior_construction_and_unknown_versions_are_refused_unchanged -- --exact
 ```
 
 See [journal retention](../guides/journal_retention.md) before replacing a binary or moving existing
@@ -504,7 +524,7 @@ Select explicit seeds and a separate output for each target:
 ```sh
 jobs="$(mktemp -d)"
 for target in inspect_receipt inspect_git_receipt verify_kubernetes_grant verify_git_grant service_document; do
-  ./fuzz/smoke.sh --output "$jobs/$target" --fuzz-target "$target" \
+  cargo xtask explore fuzz --output "$jobs/$target" --fuzz-target "$target" \
     --corpus "fuzz/corpus/$target" --seed 2118243591 --runs 10000 --timeout 3600
 done
 ```
@@ -532,7 +552,7 @@ Run the shared atomic-record simulator with explicit seed, case and step limits:
 
 ```sh
 jobs="$(mktemp -d)"
-./tests/qualification/run-simulation.sh --output "$jobs/simulation" \
+cargo xtask explore sim --output "$jobs/simulation" \
   --seed 21182435931731969 --cases 1000 --steps 48 --shards 2 --timeout 1800
 ```
 
@@ -777,7 +797,7 @@ and pins as local development. Optional qualification tools keep their pins in t
 
 | Owner                   | Responsibility                                                     |
 | ----------------------- | ------------------------------------------------------------------ |
-| `xtask/` and `scripts/` | Contributor commands and their three shell implementations         |
+| `xtask/` and `scripts/` | Contributor grammar and command launchers                          |
 | `tools/dev/`            | Tool pins, contributor-tool regressions and unattended soak runner |
 | `tools/checks/`         | Source checks and their regression tests                           |
 | `tools/release/`        | Assembly, standalone verification, SBOM scanning and their tests   |
@@ -795,9 +815,10 @@ and repository imports.
 ### Tooling names
 
 Rust and Python files use `snake_case`; shell executables use hyphenated names. Contributor shell
-entry points mirror their commands: `setup.sh`, `fmt.sh` and `ci.sh`. Name the responsibility rather
-than repeating the directory: `tools/release/assemble_artifact.py`, `verify_artifact.py` and
-`scan_sbom.py` own distinct release steps.
+entry points mirror their commands: `setup.sh`, `fmt.sh`, `check.sh`, `explore.sh` and `qualify.sh`.
+`ci.sh` temporarily retains workflow aliases; `tools/dev/run_checks.py` owns the fixed area mapping.
+Name the responsibility rather than repeating the directory: `tools/release/assemble_artifact.py`,
+`verify_artifact.py` and `scan_sbom.py` own distinct release steps.
 
 Use `test` for regression suites, `run` for qualification runners, `probe` for independent
 experiments, and `demo` for demonstrations. A `check` enforces source rules; a `scan` produces

@@ -13,6 +13,27 @@ mod schema;
 #[cfg(test)]
 pub(in crate::gateway) mod test_history;
 
+#[cfg(test)]
+pub(crate) async fn executed_write_statements() -> Vec<(StorageWrite, String)> {
+    let mut statements = Vec::new();
+    for write in [
+        StorageWrite::Admission,
+        StorageWrite::Authorization,
+        StorageWrite::Rejection,
+        StorageWrite::Attempt,
+        StorageWrite::Response,
+        StorageWrite::Observation,
+        StorageWrite::Receipt,
+    ] {
+        statements.extend(tests::kube_sqlite_bridge(write, Delivery::Confirmed));
+    }
+    statements.extend(tests::observation_mapping(0, false, false, None));
+    statements.extend(git::executed_write_statements().await);
+    statements.sort_by(|left, right| left.1.cmp(&right.1));
+    statements.dedup_by(|left, right| left.1 == right.1);
+    statements
+}
+
 use std::{
     fs::{File, TryLockError},
     path::Path,
@@ -1863,6 +1884,660 @@ mod tests {
         assert!(control
             .defect_reached()
             .contains(&Defect::ReceiptProjectionSwap));
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one independent phase/target table binds the three public read methods"
+    )]
+    fn public_kubernetes_reads_preserve_literal_phase_targets_and_receipt_fields() {
+        use test_history::{named_kube_row, trust};
+
+        use crate::application::{
+            ExecutionDisposition, ExecutionObservation, OperationReceipt, OperationStatus,
+            ServiceApplication, ServiceConfiguration,
+        };
+
+        for approved in [false, true] {
+            for (phase, result, expected_status) in [
+                (
+                    "requested",
+                    OperationResult::Unknown,
+                    OperationStatus::InProgress,
+                ),
+                (
+                    "authorized",
+                    OperationResult::Unknown,
+                    OperationStatus::InProgress,
+                ),
+                (
+                    "not_attempted",
+                    OperationResult::Unknown,
+                    OperationStatus::NotAttempted(TargetRejection::DeploymentNotFound),
+                ),
+                (
+                    "apply_started",
+                    OperationResult::Unknown,
+                    OperationStatus::InProgress,
+                ),
+                (
+                    "receiver_observed",
+                    OperationResult::Unknown,
+                    OperationStatus::InProgress,
+                ),
+                (
+                    "finalized",
+                    OperationResult::Unknown,
+                    OperationStatus::Unknown,
+                ),
+                (
+                    "finalized",
+                    OperationResult::Succeeded,
+                    OperationStatus::Succeeded,
+                ),
+                (
+                    "finalized",
+                    OperationResult::Failed,
+                    OperationStatus::Failed,
+                ),
+            ] {
+                let scratch = Scratch::new();
+                let journal = open_scratch(&scratch);
+                let target = ApprovedTarget {
+                    uid: "target-uid".into(),
+                    resource_version: "target-rv".into(),
+                };
+                let mut history = History::new(
+                    History::kube("public-read").request,
+                    approved.then_some(target.clone()),
+                );
+                if result != OperationResult::Unknown {
+                    let s = &mut history.statement;
+                    s.receiver_uid = Some("target-uid".into());
+                    s.observed_image = Some(history.request.immutable_image_digest.clone());
+                    s.observed_operation_marker = Some("public-read".into());
+                    s.current_generation = Some(6);
+                    s.requested_generation = Some(6);
+                    s.observed_generation = Some(7);
+                    s.desired_replicas = Some(3);
+                    if result == OperationResult::Succeeded {
+                        s.updated_replicas = Some(3);
+                        s.available_replicas = Some(3);
+                        s.unavailable_replicas = Some(0);
+                        s.rollout_condition_type = Some("Available".into());
+                        s.rollout_condition_status = Some("True".into());
+                        s.rollout_condition_reason = Some("MinimumReplicasAvailable".into());
+                    } else {
+                        s.updated_replicas = Some(1);
+                        s.available_replicas = Some(0);
+                        s.unavailable_replicas = Some(3);
+                    }
+                    s.result = result;
+                }
+                history.insert(&journal.connection, phase);
+                let before = named_kube_row(&journal.connection, "public-read");
+                drop(journal);
+                let control = StorageControl::default();
+                let app = ServiceApplication::open_simulated(
+                    ServiceConfiguration {
+                        journal_path: scratch.0.join("journal.sqlite3"),
+                        authorization_trust: vec![trust()],
+                        approvals: vec![],
+                    },
+                    control.clone(),
+                )
+                .unwrap();
+                let attempted =
+                    matches!(phase, "apply_started" | "receiver_observed" | "finalized");
+                let frozen = matches!(phase, "receiver_observed" | "finalized");
+                let expected_targets = OperationTargets {
+                    approved_target: approved.then_some(target.clone()),
+                    attempt_target: attempted.then_some(target),
+                    observed_target: if frozen {
+                        Some(ObservedTarget {
+                            uid: history.statement.receiver_uid.clone(),
+                            resource_version: Some("receiver-rv".into()),
+                        })
+                    } else {
+                        attempted.then_some(ObservedTarget {
+                            uid: Some("target-uid".into()),
+                            resource_version: Some("target-rv".into()),
+                        })
+                    },
+                    git: None,
+                };
+                assert_eq!(
+                    app.status("public-read").unwrap(),
+                    (expected_status, expected_targets.clone())
+                );
+                let expected_disposition = if matches!(phase, "not_attempted" | "finalized") {
+                    ExecutionDisposition::Complete
+                } else {
+                    ExecutionDisposition::ResumeRequired(None)
+                };
+                assert_eq!(
+                    app.execution_status("public-read", ExecutionObservation::Unknown)
+                        .unwrap(),
+                    (expected_status, expected_targets, expected_disposition)
+                );
+                let expected_receipt = if phase == "finalized" {
+                    let receipt = history.receipt();
+                    OperationReceipt::Ready {
+                        bytes: receipt.bytes,
+                        sha256: receipt.digest,
+                    }
+                } else {
+                    OperationReceipt::NotReady
+                };
+                assert_eq!(app.receipt("public-read").unwrap(), expected_receipt);
+                let entries = app.history(None).unwrap();
+                assert_eq!(entries.entries.len(), 1);
+                assert_eq!(entries.entries[0].operation_id, "public-read");
+                assert_eq!(entries.entries[0].status, app.status("public-read"));
+                assert!(entries.next_cursor.is_none());
+                assert!(
+                    control.events().is_empty(),
+                    "reads perform no durable transition"
+                );
+                drop(app);
+                let reopened = open_scratch(&scratch);
+                assert_eq!(named_kube_row(&reopened.connection, "public-read"), before);
+            }
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "candidate refusals and exact four-field finalization share one witness"
+    )]
+    fn receipt_commit_binds_candidate_and_expected_snapshot_without_changing_other_facts() {
+        use test_history::named_kube_row;
+
+        let scratch = Scratch::new();
+        let foreign_scratch = Scratch::new();
+        let journal = open_scratch(&scratch);
+        let foreign_journal = open_scratch(&foreign_scratch);
+        let history = History::kube("receipt-owner");
+        let mut foreign = History::kube("receipt-owner");
+        foreign.statement.available_replicas = Some(13);
+        history.insert(&journal.connection, "receiver_observed");
+        foreign.insert(&foreign_journal.connection, "receiver_observed");
+        History::kube("untouched-receipt-peer").insert(&journal.connection, "finalized");
+        let LoadedOperation::ReceiverObserved(operation) =
+            journal.operation("receipt-owner").unwrap().unwrap()
+        else {
+            unreachable!()
+        };
+        let LoadedOperation::ReceiverObserved(foreign_operation) =
+            foreign_journal.operation("receipt-owner").unwrap().unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(operation.statement(), &history.statement);
+        assert_eq!(foreign_operation.statement(), &foreign.statement);
+        let before = named_kube_row(&journal.connection, "receipt-owner");
+        let peer_before = named_kube_row(&journal.connection, "untouched-receipt-peer");
+        let foreign_candidate = ReceiptToPrepare {
+            receipt: foreign.receipt(),
+        };
+        assert!(matches!(
+            journal.commit_receipt(&operation, &foreign_candidate),
+            Err(GatewayError::InvalidPersistedState)
+        ));
+        assert!(matches!(
+            journal.commit_receipt(&foreign_operation, &foreign_candidate),
+            Err(GatewayError::InvalidTransition)
+        ));
+        for field in ["identity", "digest", "key"] {
+            let mut receipt = history.receipt();
+            let error = match field {
+                "identity" => {
+                    receipt.operation_id = "another-operation".into();
+                    GatewayError::InvalidTransition
+                },
+                "digest" => {
+                    receipt.digest = "0".repeat(64);
+                    GatewayError::InvalidPersistedState
+                },
+                "key" => {
+                    receipt.key_id = "another-key".into();
+                    GatewayError::InvalidPersistedState
+                },
+                _ => unreachable!(),
+            };
+            let result = journal.commit_receipt(&operation, &ReceiptToPrepare { receipt });
+            assert_eq!(
+                std::mem::discriminant(&result.unwrap_err()),
+                std::mem::discriminant(&error)
+            );
+            assert_eq!(named_kube_row(&journal.connection, "receipt-owner"), before);
+            assert_eq!(
+                named_kube_row(&journal.connection, "untouched-receipt-peer"),
+                peer_before
+            );
+        }
+        let receipt = history.receipt();
+        journal
+            .commit_receipt(
+                &operation,
+                &ReceiptToPrepare {
+                    receipt: receipt.clone(),
+                },
+            )
+            .unwrap();
+        let mut expected = before;
+        expected.insert(
+            "state".into(),
+            rusqlite::types::Value::Text("finalized".into()),
+        );
+        expected.insert("receipt_digest".into(), receipt.digest.into());
+        expected.insert("receipt_bytes".into(), receipt.bytes.into());
+        expected.insert("receipt_key_id".into(), receipt.key_id.into());
+        assert_eq!(
+            named_kube_row(&journal.connection, "receipt-owner"),
+            expected
+        );
+        assert!(matches!(
+            journal.commit_receipt(&operation, &foreign_candidate),
+            Err(GatewayError::InvalidTransition)
+        ));
+        assert_eq!(
+            named_kube_row(&journal.connection, "receipt-owner"),
+            expected
+        );
+        assert_eq!(
+            named_kube_row(&journal.connection, "untouched-receipt-peer"),
+            peer_before
+        );
+        drop(journal);
+        let reopened = open_scratch(&scratch);
+        assert_eq!(
+            named_kube_row(&reopened.connection, "receipt-owner"),
+            expected
+        );
+        assert_eq!(
+            reopened.receipt_statement("receipt-owner").unwrap(),
+            Some(history.statement)
+        );
+        assert_eq!(
+            named_kube_row(&reopened.connection, "untouched-receipt-peer"),
+            peer_before
+        );
+    }
+
+    #[test]
+    fn kubernetes_sqlite_bridge_consumes_all_seven_writes_under_three_deliveries() {
+        for write in [
+            StorageWrite::Admission,
+            StorageWrite::Authorization,
+            StorageWrite::Rejection,
+            StorageWrite::Attempt,
+            StorageWrite::Response,
+            StorageWrite::Observation,
+            StorageWrite::Receipt,
+        ] {
+            for delivery in [
+                Delivery::Confirmed,
+                Delivery::NoCommit,
+                Delivery::LostAcknowledgement,
+            ] {
+                kube_sqlite_bridge(write, delivery);
+            }
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "seven independent rows each bind one write, without history suffixes"
+    )]
+    pub(super) fn kube_sqlite_bridge(
+        write: StorageWrite,
+        delivery: Delivery,
+    ) -> Vec<(StorageWrite, String)> {
+        use test_history::named_kube_row;
+
+        use crate::gateway::{Gateway, ReceiptSettings};
+
+        let scratch = Scratch::new();
+        let expected_scratch = Scratch::new();
+        let mut journal = open_scratch(&scratch);
+        let expected_journal = open_scratch(&expected_scratch);
+        let mut history = History::kube("sqlite-bridge");
+        history.statement.requested_generation = None;
+        let (prior, next) = match write {
+            StorageWrite::Admission => (None, "requested"),
+            StorageWrite::Authorization => (Some("requested"), "authorized"),
+            StorageWrite::Rejection => (Some("authorized"), "not_attempted"),
+            StorageWrite::Attempt => (Some("authorized"), "apply_started"),
+            StorageWrite::Response => (Some("apply_started"), "apply_started"),
+            StorageWrite::Observation => (Some("apply_started"), "receiver_observed"),
+            StorageWrite::Receipt => (Some("receiver_observed"), "finalized"),
+        };
+        if let Some(prior) = prior {
+            history.insert(&journal.connection, prior);
+            history.insert(&expected_journal.connection, prior);
+            assert_history(
+                &journal.operation("sqlite-bridge").unwrap().unwrap(),
+                &history,
+                prior,
+            );
+        }
+        let peer = History::kube("untouched-peer");
+        peer.insert(&journal.connection, "finalized");
+        let peer_before = named_kube_row(&journal.connection, "untouched-peer");
+        let before = named_kube_row(&journal.connection, "sqlite-bridge");
+        assert_eq!(
+            before,
+            named_kube_row(&expected_journal.connection, "sqlite-bridge")
+        );
+        expected_journal
+            .connection
+            .execute(
+                "DELETE FROM kubernetes_image_operations WHERE operation_id = 'sqlite-bridge'",
+                [],
+            )
+            .unwrap();
+        history.insert(&expected_journal.connection, next);
+        if write == StorageWrite::Response {
+            expected_journal
+                .connection
+                .execute(
+                    "UPDATE kubernetes_image_operations SET apply_accepted = 1,
+                 requested_generation = 17, apply_resource_version = 'apply:0023'
+                 WHERE operation_id = 'sqlite-bridge'",
+                    [],
+                )
+                .unwrap();
+        }
+        let next_row = named_kube_row(&expected_journal.connection, "sqlite-bridge");
+        assert!(!next_row.is_empty());
+        assert_ne!(before, next_row, "the targeted write changes facts");
+        let operation = journal.operation("sqlite-bridge").unwrap();
+        let control = StorageControl::default();
+        control.fail_next(write, delivery);
+        journal.control_storage(control.clone());
+        let result = match (write, operation) {
+            (StorageWrite::Admission, None) => journal.insert_requested(&history.authorized),
+            (StorageWrite::Authorization, Some(LoadedOperation::Requested(op))) => {
+                journal.mark_authorized(&op, &history.authorized)
+            },
+            (StorageWrite::Rejection, Some(LoadedOperation::Authorized(op))) => {
+                journal.mark_not_attempted(&op, TargetRejection::DeploymentNotFound)
+            },
+            (StorageWrite::Attempt, Some(LoadedOperation::Authorized(op))) => journal
+                .begin_attempt(
+                    &op,
+                    ValidatedTargetIdentity::try_from(TargetIdentity {
+                        deployment_uid: "target-uid".into(),
+                        resource_version: "target-rv".into(),
+                    })
+                    .unwrap(),
+                    None,
+                )
+                .map(|permission| assert!(permission.is_some())),
+            (StorageWrite::Response, Some(LoadedOperation::ApplyStarted(op))) => journal
+                .record_apply_outcome(
+                    &op,
+                    &ApplyOutcome {
+                        accepted: true,
+                        requested_generation: Some(17),
+                        deployment_uid: Some("target-uid".into()),
+                        resource_version: Some("apply:0023".into()),
+                    },
+                ),
+            (StorageWrite::Observation, Some(LoadedOperation::ApplyStarted(op))) => journal
+                .freeze_observation(
+                    &op,
+                    &ReceiverObservation {
+                        deployment_uid: Some("receiver-uid".into()),
+                        image: Some(format!(
+                            "registry.example/receiver@sha256:{}",
+                            "1".repeat(64)
+                        )),
+                        operation_marker: Some("receiver-marker".into()),
+                        current_generation: Some(7),
+                        observed_generation: Some(5),
+                        resource_version: Some("receiver-rv".into()),
+                        desired_replicas: Some(5),
+                        updated_replicas: Some(3),
+                        available_replicas: Some(2),
+                        unavailable_replicas: Some(1),
+                        rollout_condition_type: Some("Progressing".into()),
+                        rollout_condition_status: Some("False".into()),
+                        rollout_condition_reason: Some("ProgressDeadlineExceeded".into()),
+                    },
+                ),
+            (StorageWrite::Receipt, Some(LoadedOperation::ReceiverObserved(op))) => {
+                let candidate = Gateway::build_receipt(
+                    &op,
+                    &ReceiptSettings {
+                        signing_seed: &[9; 32],
+                        key_id: "snapshot-receipt-key",
+                    },
+                )
+                .unwrap();
+                journal.commit_receipt(&op, &candidate)
+            },
+            _ => unreachable!("independently authored bridge phase did not reach {write:?}"),
+        };
+        match delivery {
+            Delivery::Confirmed => assert!(result.is_ok(), "{write:?}: {result:?}"),
+            Delivery::NoCommit | Delivery::LostAcknowledgement => {
+                assert!(matches!(result, Err(GatewayError::InjectedFault)));
+            },
+        }
+        let events = control.events();
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event.operation_id, "sqlite-bridge");
+        assert_eq!(event.effect, "Kubernetes");
+        assert_eq!(event.write, write);
+        assert_eq!(event.delivery, delivery);
+        assert!(event.consumed, "targeted write must consume its delivery");
+        let expected = if delivery == Delivery::NoCommit {
+            before
+        } else {
+            next_row
+        };
+        assert_eq!(
+            named_kube_row(&journal.connection, "sqlite-bridge"),
+            expected
+        );
+        assert_eq!(
+            named_kube_row(&journal.connection, "untouched-peer"),
+            peer_before
+        );
+        let sql = control.executed_sql();
+        assert_eq!(sql.len(), 1, "one actually executed SQL statement");
+        assert_eq!(sql[0].0, write);
+        drop(journal);
+        let reopened = open_scratch(&scratch);
+        assert_eq!(
+            named_kube_row(&reopened.connection, "sqlite-bridge"),
+            expected
+        );
+        assert_eq!(
+            named_kube_row(&reopened.connection, "untouched-peer"),
+            peer_before
+        );
+        sql
+    }
+
+    #[test]
+    fn observation_writers_bind_named_sql_and_reopened_statements_to_independent_inputs() {
+        for variant in 0..4 {
+            for present in [false, true] {
+                for response in [false, true] {
+                    observation_mapping(variant, present, response, None);
+                }
+            }
+        }
+        for defect in [Defect::ReplicaSwap, Defect::ReceiptProjectionSwap] {
+            observation_mapping(3, true, true, Some(defect));
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "independent SQL expectations and writer inputs stay in one mapping witness"
+    )]
+    pub(super) fn observation_mapping(
+        variant: i32,
+        present: bool,
+        response: bool,
+        defect: Option<Defect>,
+    ) -> Vec<(StorageWrite, String)> {
+        use test_history::named_kube_row;
+
+        let scratch = Scratch::new();
+        let expected_scratch = Scratch::new();
+        let mut journal = open_scratch(&scratch);
+        let expected_journal = open_scratch(&expected_scratch);
+        let mut history = History::kube("mapped-operation");
+        let peer = History::kube("untouched-peer");
+        peer.insert(&journal.connection, "finalized");
+        let peer_before = named_kube_row(&journal.connection, "untouched-peer");
+        history.insert(&journal.connection, "apply_started");
+        let LoadedOperation::ApplyStarted(operation) =
+            journal.operation("mapped-operation").unwrap().unwrap()
+        else {
+            unreachable!()
+        };
+        let requested = response.then_some(i64::from(11 + variant));
+        if response {
+            journal
+                .record_apply_outcome(
+                    &operation,
+                    &ApplyOutcome {
+                        accepted: true,
+                        requested_generation: requested,
+                        deployment_uid: Some("target-uid".into()),
+                        resource_version: Some(format!("apply-version-{variant}")),
+                    },
+                )
+                .unwrap();
+        }
+        // A foreign receiver UID/image/marker is an independently known UNKNOWN recipe.
+        // Every numeric field remains distinct, and absent fields are explicit inputs.
+        let observation = ReceiverObservation {
+            deployment_uid: present.then(|| format!("receiver-uid-{variant}")),
+            image: present.then(|| format!("registry.example/receiver@sha256:{}", "1".repeat(64))),
+            operation_marker: present.then(|| format!("receiver-marker-{variant}")),
+            current_generation: present.then_some(i64::from(101 + variant)),
+            observed_generation: present.then_some(i64::from(211 + variant)),
+            resource_version: present.then(|| format!("receiver-version-{variant}")),
+            desired_replicas: present.then_some(3 + variant),
+            updated_replicas: present.then_some(5 + variant),
+            available_replicas: present.then_some(7 + variant),
+            unavailable_replicas: present.then_some(11 + variant),
+            rollout_condition_type: present.then(|| "Progressing".into()),
+            rollout_condition_status: present.then(|| "False".into()),
+            rollout_condition_reason: present.then(|| "ProgressDeadlineExceeded".into()),
+        };
+        let s = &mut history.statement;
+        s.receiver_uid = observation.deployment_uid.clone();
+        s.observed_image = observation.image.clone();
+        s.observed_operation_marker = observation.operation_marker.clone();
+        s.current_generation = observation.current_generation;
+        s.requested_generation = requested;
+        s.observed_generation = observation.observed_generation;
+        s.observed_resource_version = observation.resource_version.clone();
+        s.desired_replicas = observation.desired_replicas;
+        s.updated_replicas = observation.updated_replicas;
+        s.available_replicas = observation.available_replicas;
+        s.unavailable_replicas = observation.unavailable_replicas;
+        s.rollout_condition_type = observation.rollout_condition_type.clone();
+        s.rollout_condition_status = observation.rollout_condition_status.clone();
+        s.rollout_condition_reason = observation.rollout_condition_reason.clone();
+        s.result = OperationResult::Unknown;
+        history.insert(&expected_journal.connection, "receiver_observed");
+        if response {
+            expected_journal
+                .connection
+                .execute(
+                    "UPDATE kubernetes_image_operations SET apply_accepted = 1,
+                 apply_resource_version = ?1 WHERE operation_id = 'mapped-operation'",
+                    [format!("apply-version-{variant}")],
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            expected_journal
+                .receipt_statement("mapped-operation")
+                .unwrap(),
+            Some(history.statement.clone()),
+            "independently authored expected row is valid"
+        );
+        let LoadedOperation::ApplyStarted(operation) =
+            journal.operation("mapped-operation").unwrap().unwrap()
+        else {
+            unreachable!()
+        };
+        let control = StorageControl::default();
+        if let Some(defect) = defect {
+            control.seed(defect);
+        }
+        journal.control_storage(control.clone());
+        journal
+            .freeze_observation(&operation, &observation)
+            .unwrap();
+        let actual = named_kube_row(&journal.connection, "mapped-operation");
+        let expected = named_kube_row(&expected_journal.connection, "mapped-operation");
+        let mapped = journal.receipt_statement("mapped-operation").unwrap();
+        if let Some(defect) = defect {
+            assert!(actual != expected || mapped != Some(history.statement.clone()));
+            assert!(control.defect_reached().contains(&defect));
+        } else {
+            assert_eq!(actual, expected, "complete named row");
+            assert_eq!(
+                mapped,
+                Some(history.statement.clone()),
+                "complete statement"
+            );
+            let loaded = journal.operation("mapped-operation").unwrap().unwrap();
+            assert_eq!(loaded.state(), OperationState::ReceiverObserved);
+            assert_eq!(loaded.result(), Some(OperationResult::Unknown));
+            assert_eq!(
+                loaded.request_facts().request.to_adapter_request(),
+                history.request
+            );
+            let expected_targets = OperationTargets {
+                approved_target: None,
+                observed_target: Some(ObservedTarget {
+                    uid: observation.deployment_uid.clone(),
+                    resource_version: observation.resource_version,
+                }),
+                attempt_target: Some(ApprovedTarget {
+                    uid: "target-uid".into(),
+                    resource_version: "target-rv".into(),
+                }),
+                git: None,
+            };
+            assert_eq!(loaded.targets(), expected_targets);
+            drop(journal);
+            let reopened = open_scratch(&scratch);
+            assert_eq!(
+                reopened.receipt_statement("mapped-operation").unwrap(),
+                Some(history.statement),
+                "reopened complete statement"
+            );
+            assert_eq!(
+                reopened
+                    .operation("mapped-operation")
+                    .unwrap()
+                    .unwrap()
+                    .targets(),
+                expected_targets,
+                "reopened target projection"
+            );
+            assert_eq!(
+                named_kube_row(&reopened.connection, "untouched-peer"),
+                peer_before
+            );
+        }
+        control.executed_sql()
     }
 
     #[test]

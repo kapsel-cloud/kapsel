@@ -1028,6 +1028,60 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_known_answer_authenticates_literal_fields_and_encodes_fixed_bytes() {
+        let expected = ExactAuthorization {
+            approved_target: Some(ApprovedTarget {
+                uid: "approved-uid-31".into(),
+                resource_version: "opaque:0047".into(),
+            }),
+            authorization_id: "snapshot-auth-17".into(),
+            operation_id: "snapshot-op-23".into(),
+            namespace: "snapshot-demo".into(),
+            deployment: "snapshot-worker".into(),
+            container: "worker".into(),
+            immutable_image_digest: format!(
+                "registry.example/snapshot-worker@sha256:{}",
+                "0123456789abcdef".repeat(4)
+            ),
+        };
+        let fixed_hex = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vectors/snapshot-grant-v2.hex"
+        ))
+        .trim();
+        let (pairs, remainder) = fixed_hex.as_bytes().as_chunks::<2>();
+        assert!(
+            remainder.is_empty(),
+            "fixed hex vector contains complete bytes"
+        );
+        let fixed: Vec<u8> = pairs
+            .iter()
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect();
+        let trust = authorization_trust(&[7; 32], "snapshot-owner-key");
+        let (actual, signer, digest) = verify_authorization_grant(&fixed, &trust)
+            .unwrap()
+            .into_parts();
+        assert_eq!(actual, expected);
+        assert_eq!(signer, "snapshot-owner-key");
+        assert_eq!(
+            digest,
+            "de65cf5b10d5f4ed0477f15b4d4d6a31f829fb31d9deb689493734784b863fa5"
+        );
+        assert_eq!(
+            hex(&sign_authorization_grant(&expected, &[7; 32], "snapshot-owner-key").unwrap()),
+            fixed_hex
+        );
+        assert!(
+            verify_authorization_grant(&fixed, &authorization_trust(&[7; 32], "owner-key"))
+                .is_err()
+        );
+        let mut legacy_envelope = fixed;
+        legacy_envelope[..SIGNED_GRANT_MAGIC.len()].copy_from_slice(SIGNED_GRANT_MAGIC);
+        assert!(verify_authorization_grant(&legacy_envelope, &trust).is_err());
+    }
+
+    #[test]
     fn combined_validation_returns_only_exact_public_identity() {
         let authorization_seed = [7_u8; 32];
         let grant =

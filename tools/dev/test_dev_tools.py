@@ -43,6 +43,7 @@ class ContributorToolsTests(unittest.TestCase):
             (root / "tools/dev").mkdir(parents=True)
             shutil.copyfile(ROOT / "scripts/setup.sh", root / "scripts/setup.sh")
             shutil.copyfile(ROOT / "tools/dev/dev-tools.sh", root / "tools/dev/dev-tools.sh")
+            shutil.copyfile(ROOT / "tools/dev/resolve_git.py", root / "tools/dev/resolve_git.py")
             shutil.copyfile(ROOT / "rust-toolchain.toml", root / "rust-toolchain.toml")
             (root / ".rustup/toolchains").mkdir(parents=True)
             host = root / "bin"
@@ -91,8 +92,9 @@ class ContributorToolsTests(unittest.TestCase):
                 path.write_text("#!/bin/sh\nset -eu\n" + body + "\n")
                 path.chmod(0o755)
 
-            for name in ("git", "cc", "node", "rustup"):
+            for name in ("cc", "node", "rustup"):
                 executable(host / name, "exit 0")
+            executable(host / "git", "printf 'git version 2.55.0\\n'")
             for path, version in (
                 (prettier_path, prettier_version),
                 (shfmt_path, "3.14.1"),
@@ -123,7 +125,7 @@ chmod +x "${0%/*}/ruff"''',
             )
             executable(
                 host / "python3",
-                f"""if [ "$1 $2" = '-m venv' ]; then
+                f"""if [ "$1 ${{2:-}}" = '-m venv' ]; then
   mkdir -p "$3/bin"
   cp "$MOCK_PIP" "$3/bin/python"
 else

@@ -9,7 +9,24 @@ use std::{
     process::{Command, ExitCode},
 };
 
-const FIXED_SCRIPTS: [&str; 3] = ["scripts/setup.sh", "scripts/fmt.sh", "scripts/ci.sh"];
+const FIXED_SCRIPTS: [&str; 6] = [
+    "scripts/setup.sh",
+    "scripts/fmt.sh",
+    "scripts/ci.sh",
+    "scripts/check.sh",
+    "scripts/explore.sh",
+    "scripts/qualify.sh",
+];
+const AREAS: [&str; 6] = ["authority", "core", "service", "tools", "release", "docs"];
+const BOUNDARIES: [&str; 7] = [
+    "storage",
+    "artifact",
+    "reproducibility",
+    "kubernetes",
+    "git",
+    "native",
+    "security",
+];
 
 #[allow(
     clippy::print_stderr,
@@ -27,7 +44,9 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), String> {
     let arguments: Vec<_> = env::args().skip(1).collect();
-    if arguments.is_empty() || matches!(arguments[0].as_str(), "help" | "--help" | "-h") {
+    if arguments.is_empty()
+        || (arguments.len() == 1 && matches!(arguments[0].as_str(), "help" | "--help" | "-h"))
+    {
         print_help();
         return Ok(());
     }
@@ -117,9 +136,27 @@ fn parse_command(arguments: &[String]) -> Result<(&'static str, Vec<&str>), Stri
         ["doctor"] => Ok(("scripts/setup.sh", vec!["--check"])),
         ["fmt"] => Ok(("scripts/fmt.sh", vec![])),
         ["fmt-check"] => Ok(("scripts/fmt.sh", vec!["--check"])),
-        ["ci"] => Ok(("scripts/ci.sh", vec![])),
+        // Current workflows still use ci; W6 owns its final cutover.
+        ["check" | "ci"] => Ok(("scripts/check.sh", vec!["check"])),
+        [verb @ ("test" | "check"), area] if AREAS.contains(area) => {
+            Ok(("scripts/check.sh", vec![*verb, *area]))
+        },
+        ["explore", mode @ ("sim" | "fuzz"), rest @ ..] => Ok((
+            "scripts/explore.sh",
+            std::iter::once(*mode).chain(rest.iter().copied()).collect(),
+        )),
+        ["qualify", boundary, rest @ ..] if BOUNDARIES.contains(boundary) => Ok((
+            "scripts/qualify.sh",
+            std::iter::once(*boundary)
+                .chain(rest.iter().copied())
+                .collect(),
+        )),
         ["ci", lane @ ("static" | "rust" | "doc")] => Ok(("scripts/ci.sh", vec![*lane])),
-        _ => Err("usage: cargo xtask <setup|doctor|fmt|fmt-check|ci [static|rust|doc]>".into()),
+        _ => Err(concat!(
+            "usage: cargo xtask setup|doctor|fmt|test <area>|check [area]|",
+            "explore sim|fuzz ...|qualify <boundary> ..."
+        )
+        .into()),
     }
 }
 
@@ -134,8 +171,11 @@ fn print_help() {
         cargo xtask doctor      diagnose tools without installing\n\
         cargo xtask fmt         format source and documentation\n\
         cargo xtask fmt-check   check formatting without rewriting\n\
-        cargo xtask ci          run the deterministic gate\n\
-        cargo xtask ci <lane>   run static, rust, or doc checks"
+        cargo xtask test <area> focused deterministic iteration\n\
+        cargo xtask check [area] completed-change gate (default: all)\n\
+        cargo xtask explore sim|fuzz ... explicit bounded exploration\n\
+        cargo xtask qualify <boundary> ... explicit physical/selected-byte evidence\n\
+        Areas: authority, core, service, tools, release, docs"
     );
 }
 
@@ -150,7 +190,8 @@ mod tests {
             (vec!["doctor"], "scripts/setup.sh", vec!["--check"]),
             (vec!["fmt"], "scripts/fmt.sh", vec![]),
             (vec!["fmt-check"], "scripts/fmt.sh", vec!["--check"]),
-            (vec!["ci"], "scripts/ci.sh", vec![]),
+            (vec!["ci"], "scripts/check.sh", vec!["check"]),
+            (vec!["check"], "scripts/check.sh", vec!["check"]),
             (vec!["ci", "static"], "scripts/ci.sh", vec!["static"]),
             (vec!["ci", "rust"], "scripts/ci.sh", vec!["rust"]),
             (vec!["ci", "doc"], "scripts/ci.sh", vec!["doc"]),
@@ -161,6 +202,49 @@ mod tests {
             let mut extra_arguments = arguments;
             extra_arguments.push("unexpected".into());
             assert!(parse_command(&extra_arguments).is_err());
+        }
+        for area in super::AREAS {
+            for verb in ["test", "check"] {
+                let arguments = [verb.to_owned(), area.to_owned()];
+                assert_eq!(
+                    parse_command(&arguments)?,
+                    ("scripts/check.sh", vec![verb, area])
+                );
+                assert!(
+                    parse_command(&[verb.to_owned(), area.to_owned(), "extra".into()]).is_err()
+                );
+            }
+        }
+        for (verb, mode, script) in [
+            ("explore", "sim", "scripts/explore.sh"),
+            ("explore", "fuzz", "scripts/explore.sh"),
+            ("qualify", "artifact", "scripts/qualify.sh"),
+            ("qualify", "storage", "scripts/qualify.sh"),
+            ("qualify", "reproducibility", "scripts/qualify.sh"),
+            ("qualify", "kubernetes", "scripts/qualify.sh"),
+            ("qualify", "git", "scripts/qualify.sh"),
+            ("qualify", "native", "scripts/qualify.sh"),
+            ("qualify", "security", "scripts/qualify.sh"),
+        ] {
+            let arguments = [
+                verb.into(),
+                mode.into(),
+                "--output".into(),
+                "path with space".into(),
+            ];
+            assert_eq!(
+                parse_command(&arguments)?,
+                (script, vec![mode, "--output", "path with space"])
+            );
+        }
+        for values in [
+            vec!["test"],
+            vec!["check", "all"],
+            vec!["explore", "unknown"],
+            vec!["qualify", "unknown"],
+        ] {
+            let arguments = values.into_iter().map(String::from).collect::<Vec<_>>();
+            assert!(parse_command(&arguments).is_err());
         }
         assert!(parse_command(&["ci".into(), "live".into()]).is_err());
         Ok(())

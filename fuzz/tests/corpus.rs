@@ -1,3 +1,5 @@
+use std::{fs, path::Path};
+
 use kapsel::{inspect_git_receipt, inspect_receipt, InspectionLimits, InspectionStatus};
 use kapsel_authority::{verify_authorization_grant, verify_git_ref_grant};
 use kapsel_fuzz::{fixture_trust, fixtures, receipt_documents, run, TARGETS};
@@ -5,18 +7,31 @@ use kapsel_fuzz::{fixture_trust, fixtures, receipt_documents, run, TARGETS};
 #[test]
 fn canonical_and_negative_seeds_cross_production_interfaces() {
     for target in TARGETS {
-        for (name, bytes) in fixtures::seeds(target) {
+        let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("corpus")
+            .join(target);
+        let mut entries: Vec<_> = fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        entries.sort();
+        assert!(!entries.is_empty(), "{target}: nonempty committed corpus");
+        for path in entries {
+            let name = path.file_name().unwrap().to_str().unwrap();
+            let bytes = fs::read(&path).unwrap();
             run(target, &bytes);
 
             let decoder_accepted = match target {
                 "inspect_receipt" | "inspect_git_receipt" => {
-                    let (receipt, trust) = receipt_documents(&bytes).unwrap();
-                    let status = if target == "inspect_receipt" {
-                        inspect_receipt(receipt, trust, 150, InspectionLimits::default()).status()
-                    } else {
-                        inspect_git_receipt(receipt, trust, 150, InspectionLimits::default())
-                            .status()
+                    let status = receipt_status(target, &bytes);
+                    let expected = match name {
+                        "canonical-receipt-and-trust" | "canonical-snapshot" => {
+                            InspectionStatus::Inspected
+                        },
+                        "damaged-signature" => InspectionStatus::SignatureRejected,
+                        _ => InspectionStatus::StructureRejected,
                     };
+                    assert_eq!(status, expected, "{target}/{name}: exact status");
                     status == InspectionStatus::Inspected
                 },
                 "verify_kubernetes_grant" => {
@@ -32,15 +47,14 @@ fn canonical_and_negative_seeds_cross_production_interfaces() {
             };
 
             let seed_should_be_accepted = match target {
-                "inspect_receipt" | "inspect_git_receipt" => matches!(
-                    name.as_str(),
-                    "canonical-receipt-and-trust" | "canonical-snapshot"
-                ),
+                "inspect_receipt" | "inspect_git_receipt" => {
+                    matches!(name, "canonical-receipt-and-trust" | "canonical-snapshot")
+                },
                 "verify_kubernetes_grant" => matches!(
-                    name.as_str(),
+                    name,
                     "canonical" | "legacy-kubernetes" | "snapshot-kubernetes"
                 ),
-                "verify_git_grant" => matches!(name.as_str(), "canonical" | "git-purpose"),
+                "verify_git_grant" => matches!(name, "canonical" | "git-purpose"),
                 "service_document" => name.starts_with("canonical"),
                 _ => unreachable!(),
             };
@@ -50,6 +64,45 @@ fn canonical_and_negative_seeds_cross_production_interfaces() {
             );
         }
     }
+}
+
+fn receipt_status(target: &str, bytes: &[u8]) -> InspectionStatus {
+    let Some((receipt, trust)) = receipt_documents(bytes) else {
+        return InspectionStatus::StructureRejected;
+    };
+    if target == "inspect_receipt" {
+        inspect_receipt(receipt, trust, 150, InspectionLimits::default()).status()
+    } else {
+        inspect_git_receipt(receipt, trust, 150, InspectionLimits::default()).status()
+    }
+}
+
+#[test]
+fn reviewed_regression_bytes_run_the_semantic_driver_and_check_expected_status() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("regressions");
+    let mut selected = Vec::new();
+    for directory in fs::read_dir(root).unwrap() {
+        let directory = directory.unwrap().path();
+        let target = directory.file_name().unwrap().to_str().unwrap();
+        assert!(
+            TARGETS.contains(&target),
+            "unknown regression target {target}"
+        );
+        for entry in fs::read_dir(&directory).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_str().unwrap();
+            let expected = match (target, name) {
+                ("inspect_git_receipt", "signer-probe-collision") => InspectionStatus::Inspected,
+                _ => panic!("regression {target}/{name} needs a reviewed semantic expectation"),
+            };
+            let bytes = fs::read(&path).unwrap();
+            run(target, &bytes);
+            assert_eq!(receipt_status(target, &bytes), expected, "{target}/{name}");
+            selected.push(format!("{target}/{name}"));
+        }
+    }
+    selected.sort();
+    assert_eq!(selected, ["inspect_git_receipt/signer-probe-collision"]);
 }
 
 #[test]
@@ -78,28 +131,6 @@ fn damaged_signatures_are_rejected_for_both_receipt_purposes() {
             run(target, &fixtures::pair(&damaged, trust));
         }
     }
-}
-
-#[test]
-fn externally_appointed_signer_cannot_collide_with_the_wrong_signer_probe() {
-    let original_receipt = fixtures::git_receipt(b"UNKNOWN");
-    let mut envelope_fields = fixtures::fields(&original_receipt).unwrap();
-    envelope_fields[1] = b"not-the-signer";
-    let changed_receipt = fixtures::records(b"KAPSEL-GIT-REF-RECEIPT-V1\0", &envelope_fields);
-    let trust = kapsel::ReceiptTrust {
-        key_id: "not-the-signer".into(),
-        public_key: fixture_trust().public_key,
-        accepted_purpose: kapsel::GIT_RECEIPT_PURPOSE.into(),
-        not_before_unix_s: 100,
-        not_after_unix_s: 200,
-    }
-    .encode()
-    .unwrap();
-
-    run(
-        "inspect_git_receipt",
-        &fixtures::pair(&changed_receipt, &trust),
-    );
 }
 
 #[test]

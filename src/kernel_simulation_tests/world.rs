@@ -17,11 +17,11 @@ use crate::{
     application::ServiceApproval,
     gateway::{
         git::{
-            exploration::{Barrier, Script},
+            exploration::{Barrier, Script, State},
             Acknowledgement,
         },
         ApprovedTarget, AuthorizationTrust, Delivery, DeploymentImageAdapter, DispatchPermission,
-        ExactAuthorization, SetDeploymentImageRequest, StorageControl, StorageWrite,
+        ExactAuthorization, ReceiptTrust, SetDeploymentImageRequest, StorageControl, StorageWrite,
         TargetReadError, TestApplyOutcome as ApplyOutcome,
         TestReceiverObservation as ReceiverObservation, TestTargetIdentity as TargetIdentity,
     },
@@ -221,6 +221,8 @@ pub(super) struct Observations {
     pub(super) preflight: Option<TargetIdentity>,
     pub(super) returned: Option<ReceiverObservation>,
     pub(super) response: Option<ApplyOutcome>,
+    pub(super) expected_result: Option<&'static str>,
+    pub(super) inferred_generation: Option<i64>,
     pub(super) violation: Option<&'static str>,
 }
 
@@ -331,44 +333,65 @@ impl DeploymentImageAdapter for Adapter {
             let sent = !io.sends.is_empty();
             let failed = matches!(self.receiver, Receiver::Failed);
             let pending = matches!(self.receiver, Receiver::Pending);
-            let observation = ReceiverObservation {
-                deployment_uid: Some(if matches!(self.receiver, Receiver::Replaced) {
-                    "replacement-uid".into()
-                } else {
-                    self.intent.uid.clone()
-                }),
-                resource_version: Some(
-                    if sent {
-                        "observed-version"
+            let observation = if matches!(self.receiver, Receiver::MissingFacts) {
+                ReceiverObservation::unknown()
+            } else {
+                ReceiverObservation {
+                    deployment_uid: Some(if matches!(self.receiver, Receiver::Replaced) {
+                        "replacement-uid".into()
                     } else {
-                        &self.intent.version
-                    }
-                    .into(),
-                ),
-                current_generation: Some(if sent { 7 } else { 3 }),
-                observed_generation: Some(
-                    if matches!(self.receiver, Receiver::WrongGeneration) || (sent && pending) {
-                        6
-                    } else if sent {
-                        7
-                    } else {
-                        3
-                    },
-                ),
-                image: sent.then(|| self.intent.request.immutable_image_digest.clone()),
-                operation_marker: sent.then(|| self.intent.request.operation_id.clone()),
-                desired_replicas: Some(if pending { 5 } else { 1 }),
-                updated_replicas: Some(if pending { 4 } else { i32::from(!failed) }),
-                available_replicas: Some(if pending { 2 } else { i32::from(!failed) }),
-                unavailable_replicas: Some(if pending { 3 } else { i32::from(failed) }),
-                rollout_condition_type: Some(
-                    if failed { "Progressing" } else { "Available" }.into(),
-                ),
-                rollout_condition_status: Some(
-                    if failed || pending { "False" } else { "True" }.into(),
-                ),
-                rollout_condition_reason: failed.then(|| "ProgressDeadlineExceeded".into()),
+                        self.intent.uid.clone()
+                    }),
+                    resource_version: Some(
+                        if sent {
+                            "observed-version"
+                        } else {
+                            &self.intent.version
+                        }
+                        .into(),
+                    ),
+                    current_generation: Some(if sent { 7 } else { 3 }),
+                    observed_generation: Some(
+                        if matches!(self.receiver, Receiver::WrongGeneration) || (sent && pending) {
+                            6
+                        } else if sent {
+                            7
+                        } else {
+                            3
+                        },
+                    ),
+                    image: sent.then(|| self.intent.request.immutable_image_digest.clone()),
+                    operation_marker: sent.then(|| self.intent.request.operation_id.clone()),
+                    desired_replicas: Some(if pending { 5 } else { 1 }),
+                    updated_replicas: Some(if pending { 4 } else { i32::from(!failed) }),
+                    available_replicas: Some(if pending { 2 } else { i32::from(!failed) }),
+                    unavailable_replicas: Some(if pending { 3 } else { i32::from(failed) }),
+                    rollout_condition_type: Some(
+                        if failed { "Progressing" } else { "Available" }.into(),
+                    ),
+                    rollout_condition_status: Some(
+                        if failed || pending { "False" } else { "True" }.into(),
+                    ),
+                    rollout_condition_reason: failed.then(|| "ProgressDeadlineExceeded".into()),
+                }
             };
+            // These are authored receiver cases, not a second classifier over returned fields.
+            io.expected_result = Some(match (sent, self.receiver) {
+                (true, Receiver::Healthy | Receiver::StaleVersion) => "SUCCEEDED",
+                (true, Receiver::Failed) => "FAILED",
+                (false, _)
+                | (
+                    true,
+                    Receiver::Pending
+                    | Receiver::Replaced
+                    | Receiver::WrongGeneration
+                    | Receiver::Unavailable
+                    | Receiver::MissingFacts,
+                ) => "UNKNOWN",
+            });
+            io.inferred_generation = (sent
+                && !matches!(self.receiver, Receiver::Replaced | Receiver::MissingFacts))
+            .then_some(7);
             io.returned = Some(observation.clone());
             observation
         };
@@ -405,7 +428,7 @@ impl Intent {
             operation_id: distinct(ID),
             namespace: distinct("demo"),
             deployment: distinct("api"),
-            container: distinct("api"),
+            container: distinct("worker"),
             immutable_image_digest: if peer == 0 {
                 IMAGE.into()
             } else {
@@ -491,6 +514,20 @@ impl Intent {
             && raw.get("signed_authorization_grant") == Some(&Value::Blob(self.grant.clone()))
             && text(raw, "approved_uid") == Some(self.uid.as_str())
             && text(raw, "approved_resource_version") == Some(self.version.as_str())
+    }
+
+    pub(super) fn receipt_trust(&self, purpose: &str) -> Vec<u8> {
+        ReceiptTrust {
+            key_id: self.receipt_key.clone(),
+            public_key: SigningKey::from_bytes(&self.receipt_seed)
+                .verifying_key()
+                .to_bytes(),
+            accepted_purpose: purpose.into(),
+            not_before_unix_s: 0,
+            not_after_unix_s: 60,
+        }
+        .encode()
+        .unwrap()
     }
 
     pub(super) fn approval(&self) -> ServiceApproval {
@@ -596,21 +633,27 @@ impl Peer {
     }
 
     pub(super) fn snapshot(&self) -> PeerSnapshot {
-        let (reads, sends) = self.git.as_ref().map_or_else(
+        self.adapter
+            .snapshot(self.git.as_ref().map(|git| &*git.script.state))
+    }
+}
+
+impl Adapter {
+    pub(super) fn snapshot(&self, git: Option<&Mutex<State>>) -> PeerSnapshot {
+        let (reads, sends) = git.map_or_else(
             || {
-                let io = self.adapter.io.lock().unwrap();
+                let io = self.io.lock().unwrap();
                 (io.reads, io.sends.len())
             },
-            |git| {
-                let io = git.script.state.lock().unwrap();
+            |state| {
+                let io = state.lock().unwrap();
                 (io.reads, io.sends)
             },
         );
         PeerSnapshot {
-            record: self.adapter.store.raw_effect(
-                &self.adapter.intent.request.operation_id,
-                self.git.is_some(),
-            ),
+            record: self
+                .store
+                .raw_effect(&self.intent.request.operation_id, git.is_some()),
             reads,
             sends,
         }

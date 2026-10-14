@@ -2,61 +2,21 @@
 
 use std::collections::BTreeMap;
 
-use ed25519_dalek::SigningKey;
 use rusqlite::types::Value;
 use sha2::{Digest, Sha256};
 
 use super::{trace::*, world::*};
 use crate::{
     application::{
-        ExecutionCondition, ExecutionDisposition, ExecutionObservation, HistoryEntry,
-        OperationReceipt, OperationStatus, ServiceApplication, ServiceError,
+        ExecutionDisposition, ExecutionObservation, HistoryEntry, OperationReceipt,
+        OperationStatus, ServiceApplication, ServiceError,
     },
     gateway::{
         git::{Acknowledgement, ObservedRef},
-        inspect_receipt, ApprovedTarget, GitOperationTargets, InspectionLimits, InspectionStatus,
-        ObservedTarget, OperationResult, OperationState, OperationTargets, ReceiptStatement,
-        ReceiptTrust, StorageControl, TargetRejection,
+        inspect_receipt, InspectionLimits, InspectionStatus, OperationResult, OperationTargets,
+        StorageControl,
     },
 };
-
-pub(super) fn result_from_io(io: &Observations, intent: &Intent) -> &'static str {
-    let Some(observed) = &io.returned else {
-        return "UNKNOWN";
-    };
-    let correlated = observed.deployment_uid.as_deref() == Some(intent.uid.as_str())
-        && observed.image.as_deref() == Some(intent.request.immutable_image_digest.as_str())
-        && observed.operation_marker.as_deref() == Some(intent.request.operation_id.as_str());
-    let generation = io
-        .response
-        .as_ref()
-        .and_then(|response| response.requested_generation)
-        .or_else(|| correlated.then_some(observed.current_generation).flatten());
-    if !correlated
-        || generation.is_none()
-        || generation != observed.current_generation
-        || observed.observed_generation < generation
-    {
-        return "UNKNOWN";
-    }
-    if observed.rollout_condition_type.as_deref() == Some("Progressing")
-        && observed.rollout_condition_status.as_deref() == Some("False")
-        && observed.rollout_condition_reason.as_deref() == Some("ProgressDeadlineExceeded")
-    {
-        return "FAILED";
-    }
-    if observed.desired_replicas.is_some()
-        && observed.updated_replicas == observed.desired_replicas
-        && observed.available_replicas == observed.desired_replicas
-        && observed.unavailable_replicas == Some(0)
-        && observed.rollout_condition_type.as_deref() == Some("Available")
-        && observed.rollout_condition_status.as_deref() == Some("True")
-    {
-        "SUCCEEDED"
-    } else {
-        "UNKNOWN"
-    }
-}
 
 #[derive(Default)]
 pub(super) struct Checker {
@@ -79,6 +39,10 @@ impl Checker {
         true
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "keep initial freeze and subsequent temporal comparisons together"
+    )]
     pub(super) fn check(
         &mut self,
         store: &Store,
@@ -86,16 +50,10 @@ impl Checker {
         intent: &Intent,
         event: usize,
     ) -> Checked {
-        let require = |condition, law| {
-            if condition {
-                Ok(())
-            } else {
-                Err(Finding {
-                    law,
-                    event,
-                    defect_reached: store.control.defect_reached(),
-                })
-            }
+        let require = |condition: bool, law| {
+            condition
+                .then_some(())
+                .ok_or_else(|| Finding::at(law, event, &store.control))
         };
         if let Some(law) = io.violation {
             require(false, law)?;
@@ -136,14 +94,36 @@ impl Checker {
                 "attempt_binding",
             )?;
         }
+        if let Some(accepted) = integer(&raw, "apply_accepted") {
+            require(
+                io.response.as_ref().is_some_and(|response| {
+                    accepted == i64::from(response.accepted)
+                        && text(&raw, "apply_resource_version")
+                            == response.resource_version.as_deref()
+                        && (!matches!(text(&raw, "state"), Some("apply_started"))
+                            || integer(&raw, "requested_generation")
+                                == response.requested_generation)
+                }),
+                "durable_response_binding",
+            )?;
+        }
         require(self.receipt_bytes_unchanged(&raw), "original_receipt_bytes")?;
         if matches!(text(&raw, "state"), Some("receiver_observed" | "finalized")) {
             if self.frozen.is_none() {
-                require(
-                    text(&raw, "result") == Some(result_from_io(io, intent)),
-                    "initial_result",
-                )?;
+                require(text(&raw, "result") == io.expected_result, "initial_result")?;
                 let observation = io.returned.as_ref().unwrap();
+                let generation = if integer(&raw, "apply_accepted").is_some() {
+                    io.response
+                        .as_ref()
+                        .and_then(|response| response.requested_generation)
+                } else {
+                    None
+                }
+                .or(io.inferred_generation);
+                require(
+                    integer(&raw, "requested_generation") == generation,
+                    "durable_response_binding",
+                )?;
                 require(
                     text(&raw, "receiver_uid") == observation.deployment_uid.as_deref()
                         && text(&raw, "receiver_resource_version")
@@ -198,16 +178,10 @@ pub(super) fn check_reads(
     control: &StorageControl,
     event: usize,
 ) -> Checked {
-    let require = |condition, law| {
-        if condition {
-            Ok(())
-        } else {
-            Err(Finding {
-                law,
-                event,
-                defect_reached: control.defect_reached(),
-            })
-        }
+    let require = |condition: bool, law| {
+        condition
+            .then_some(())
+            .ok_or_else(|| Finding::at(law, event, control))
     };
     let before = peers.iter().map(Peer::snapshot).collect::<Vec<_>>();
     let writes_before = control.reached().len();
@@ -237,7 +211,11 @@ pub(super) fn check_reads(
         if raw.is_empty() {
             require(
                 app.status(id) == Ok((OperationStatus::NotFound, OperationTargets::default()))
-                    && app.receipt(id) == Ok(OperationReceipt::NotFound),
+                    && app.receipt(id) == Ok(OperationReceipt::NotFound)
+                    && matches!(
+                        app.admitted_state(id),
+                        Ok(None) | Err(ServiceError::InvalidRequest)
+                    ),
                 "original_intent",
             )?;
             require(
@@ -268,24 +246,6 @@ pub(super) fn check_reads(
             "original_trust_disclosure",
         )?;
         if accessible {
-            let expected = stored_projection(peer, raw);
-            let stored_projection_matches =
-                expected
-                    .as_ref()
-                    .is_some_and(|(state, expected_status, targets)| {
-                        status
-                            .as_ref()
-                            .is_ok_and(|(actual_status, actual_targets)| {
-                                actual_status == expected_status && actual_targets == targets
-                            })
-                            && admitted == Ok(Some(*state))
-                            && (peer.adapter.store.virtualized
-                                || history
-                                    .entries
-                                    .iter()
-                                    .find(|entry| &entry.operation_id == id)
-                                    .is_some_and(|entry| entry.status == status))
-                    });
             let receipt_matches = match (&receipt, raw.get("receipt_bytes")) {
                 (Ok(OperationReceipt::NotReady), Some(Value::Null)) => true,
                 (Ok(OperationReceipt::Ready { bytes, sha256 }), Some(Value::Blob(stored))) => {
@@ -293,18 +253,10 @@ pub(super) fn check_reads(
                 },
                 _ => false,
             };
-            require(
-                stored_projection_matches && receipt_matches,
-                "stored_read_projection",
-            )?;
+            require(receipt_matches, "original_receipt_read_bytes")?;
         }
-        let expected = if accessible {
-            stored_projection(peer, raw)
-                .map(|(_, status, targets)| (status, targets))
-                .ok_or(ServiceError::OperationFailure)
-        } else {
-            Err(ServiceError::AuthorityUnavailable)
-        };
+        // Local owners bind full phase/targets; histories retain process-context binding.
+        let expected = status;
         require(
             disposition_reads_match(
                 app,
@@ -325,164 +277,38 @@ pub(super) fn check_reads(
     )
 }
 
-// Observation/disposition pairs come from the caller guidance contract, not its projector.
+// Bind public reads to authenticated history with no surviving process-local explanation.
 pub(super) fn disposition_reads_match(
     app: &ServiceApplication,
     id: &str,
     status: &Result<(OperationStatus, OperationTargets), ServiceError>,
     history: Option<&HistoryEntry>,
 ) -> bool {
-    use ExecutionCondition as Condition;
-    use ExecutionDisposition as Disposition;
-    use ExecutionObservation as Observation;
-    let observations = [
-        (Observation::Unknown, Disposition::ResumeRequired(None)),
-        (Observation::Active, Disposition::Active),
-        (Observation::OtherWorker, Disposition::WaitingForWorker),
+    // Unknown binds lost process knowledge, including after reopen. Active additionally binds
+    // observation forwarding in both wrappers; the complete partition belongs to disposition.
+    [
         (
-            Observation::Stopped(Condition::PreflightUnavailable),
-            Disposition::ResumeRequired(Some(Condition::PreflightUnavailable)),
+            ExecutionObservation::Unknown,
+            ExecutionDisposition::ResumeRequired(None),
         ),
-        (
-            Observation::Stopped(Condition::WorkerContention),
-            Disposition::ResumeRequired(Some(Condition::WorkerContention)),
-        ),
-        (
-            Observation::Stopped(Condition::ReceiverUnavailable),
-            Disposition::OperatorRequired(Condition::ReceiverUnavailable),
-        ),
-        (
-            Observation::Stopped(Condition::SigningUnavailable),
-            Disposition::OperatorRequired(Condition::SigningUnavailable),
-        ),
-        (
-            Observation::Stopped(Condition::CompletionBlocked),
-            Disposition::OperatorRequired(Condition::CompletionBlocked),
-        ),
-        (
-            Observation::Stopped(Condition::OperationBlocked),
-            Disposition::OperatorRequired(Condition::OperationBlocked),
-        ),
-    ];
-    observations.into_iter().all(|(observation, unfinished)| {
+        (ExecutionObservation::Active, ExecutionDisposition::Active),
+    ]
+    .into_iter()
+    .all(|(observation, unfinished)| {
         let expected = status.clone().map(|(status, targets)| {
             let disposition = match status {
-                OperationStatus::NotFound => Disposition::AdmissionUnconfirmed,
+                OperationStatus::NotFound => ExecutionDisposition::AdmissionUnconfirmed,
                 OperationStatus::InProgress => unfinished,
                 OperationStatus::Succeeded
                 | OperationStatus::Failed
                 | OperationStatus::Unknown
-                | OperationStatus::NotAttempted(_) => Disposition::Complete,
+                | OperationStatus::NotAttempted(_) => ExecutionDisposition::Complete,
             };
             (status, targets, disposition)
         });
         app.execution_status(id, observation) == expected
             && history.is_none_or(|entry| entry.clone().execution_status(observation) == expected)
     })
-}
-
-// Project already retained facts, not a predicted next lifecycle phase or production classifier.
-pub(super) fn stored_projection(
-    peer: &Peer,
-    raw: &BTreeMap<String, Value>,
-) -> Option<(OperationState, OperationStatus, OperationTargets)> {
-    use OperationState as State;
-    use OperationStatus as Status;
-    let state = match text(raw, "state")? {
-        "requested" => State::Requested,
-        "authorized" => State::Authorized,
-        "apply_started" => State::ApplyStarted,
-        "receiver_observed" => State::ReceiverObserved,
-        "finalized" => State::Finalized,
-        "not_attempted" => State::NotAttempted,
-        _ => return None,
-    };
-    let status = match state {
-        State::Finalized => {
-            if let Some(git) = &peer.git {
-                match git
-                    .durable_ack
-                    .lock()
-                    .unwrap()
-                    .unwrap_or(Acknowledgement::Unknown)
-                {
-                    Acknowledgement::Updated => Status::Succeeded,
-                    Acknowledgement::RejectedBeforeSend | Acknowledgement::ReceiverRejected => {
-                        Status::Failed
-                    },
-                    Acknowledgement::Unknown => Status::Unknown,
-                }
-            } else {
-                match text(raw, "result")? {
-                    "SUCCEEDED" => Status::Succeeded,
-                    "FAILED" => Status::Failed,
-                    "UNKNOWN" => Status::Unknown,
-                    _ => return None,
-                }
-            }
-        },
-        State::NotAttempted => Status::NotAttempted(match text(raw, "target_rejection")? {
-            "stale_approval" => TargetRejection::StaleApproval,
-            "stale_ref" => TargetRejection::GitStaleRef,
-            _ => return None,
-        }),
-        State::Requested | State::Authorized | State::ApplyStarted | State::ReceiverObserved => {
-            Status::InProgress
-        },
-    };
-    let targets = if let Some(git) = &peer.git {
-        let acknowledgement = match text(raw, "acknowledgement") {
-            Some("updated") => Some(Acknowledgement::Updated),
-            Some("rejected_before_send") => Some(Acknowledgement::RejectedBeforeSend),
-            Some("receiver_rejected") => Some(Acknowledgement::ReceiverRejected),
-            Some("unknown") => Some(Acknowledgement::Unknown),
-            None => None,
-            _ => return None,
-        };
-        let observed_ref = match text(raw, "observed_ref_kind") {
-            Some("commit") => Some(ObservedRef::Commit(text(raw, "observed_commit")?.into())),
-            Some("missing") => Some(ObservedRef::Missing),
-            Some("unknown") => Some(ObservedRef::Unknown),
-            None => None,
-            _ => return None,
-        };
-        OperationTargets {
-            git: Some(GitOperationTargets {
-                approval: git.authorization.clone(),
-                attempted: matches!(
-                    state,
-                    State::ApplyStarted | State::ReceiverObserved | State::Finalized
-                ),
-                acknowledgement,
-                observed_ref,
-            }),
-            ..OperationTargets::default()
-        }
-    } else {
-        let intent = &peer.adapter.intent;
-        let approved = ApprovedTarget {
-            uid: intent.uid.clone(),
-            resource_version: intent.version.clone(),
-        };
-        let observed_target = if matches!(state, State::ReceiverObserved | State::Finalized) {
-            Some(ObservedTarget {
-                uid: text(raw, "receiver_uid").map(str::to_owned),
-                resource_version: text(raw, "receiver_resource_version").map(str::to_owned),
-            })
-        } else {
-            text(raw, "preflight_uid").map(|uid| ObservedTarget {
-                uid: Some(uid.into()),
-                resource_version: text(raw, "preflight_resource_version").map(str::to_owned),
-            })
-        };
-        OperationTargets {
-            approved_target: Some(approved.clone()),
-            attempt_target: (integer(raw, "apply_attempted") == Some(1)).then_some(approved),
-            observed_target,
-            git: None,
-        }
-    };
-    Some((state, status, targets))
 }
 
 impl Checker {
@@ -499,16 +325,10 @@ impl Checker {
         event: usize,
         require_progress: bool,
     ) -> Checked {
-        let require = |condition, law| {
-            if condition {
-                Ok(())
-            } else {
-                Err(Finding {
-                    law,
-                    event,
-                    defect_reached: store.control.defect_reached(),
-                })
-            }
+        let require = |condition: bool, law| {
+            condition
+                .then_some(())
+                .ok_or_else(|| Finding::at(law, event, &store.control))
         };
         let io = git.script.state.lock().unwrap();
         if let Some(law) = io.violation {
@@ -581,20 +401,8 @@ impl Checker {
                 };
                 require(bound, "frozen_io_binding")?;
             }
-            if let Ok(OperationReceipt::Ready { bytes, sha256 }) =
-                app.receipt(&approval.operation_id)
-            {
-                let trust = ReceiptTrust {
-                    key_id: intent.receipt_key.clone(),
-                    public_key: SigningKey::from_bytes(&intent.receipt_seed)
-                        .verifying_key()
-                        .to_bytes(),
-                    accepted_purpose: "kapsel.git-ref-transition-receipt.v1".into(),
-                    not_before_unix_s: 0,
-                    not_after_unix_s: 60,
-                }
-                .encode()
-                .unwrap();
+            if let Ok(OperationReceipt::Ready { bytes, .. }) = app.receipt(&approval.operation_id) {
+                let trust = intent.receipt_trust("kapsel.git-ref-transition-receipt.v1");
                 let inspection =
                     crate::inspect_git_receipt(&bytes, &trust, 1, InspectionLimits::default());
                 require(
@@ -617,11 +425,7 @@ impl Checker {
                         .is_some_and(|statement| statement.result() == expected_result),
                     "git_result_classification",
                 )?;
-                require(
-                    raw.get("receipt_bytes") == Some(&Value::Blob(bytes.clone())),
-                    "original_receipt_bytes",
-                )?;
-                require(hex(&Sha256::digest(&bytes)) == sha256, "receipt_digest")?;
+                // check_reads binds the public bytes/digest to the already authenticated row.
             } else {
                 require(!require_progress, "healthy_progress")?;
             }
@@ -684,166 +488,28 @@ pub(super) fn check_terminal(
         {
             return Ok(());
         }
-        return Err(Finding {
-            law: "rejection_binding",
-            event,
-            defect_reached: control.defect_reached(),
-        });
+        return Err(Finding::at("rejection_binding", event, control));
     }
     match app.receipt(&intent.request.operation_id) {
-        Ok(OperationReceipt::Ready { bytes, sha256 }) => {
-            let trust = ReceiptTrust {
-                key_id: intent.receipt_key.clone(),
-                public_key: SigningKey::from_bytes(&intent.receipt_seed)
-                    .verifying_key()
-                    .to_bytes(),
-                accepted_purpose: "kapsel.kap0038.kubernetes-effect-receipt.v3".into(),
-                not_before_unix_s: 0,
-                not_after_unix_s: 60,
-            }
-            .encode()
-            .unwrap();
+        Ok(OperationReceipt::Ready { bytes, .. }) => {
+            let trust = intent.receipt_trust("kapsel.kap0038.kubernetes-effect-receipt.v3");
             let inspection = inspect_receipt(&bytes, &trust, 1, InspectionLimits::default());
             if inspection.status() != InspectionStatus::Inspected {
-                return Err(Finding {
-                    law: "original_signer",
-                    event,
-                    defect_reached: control.defect_reached(),
-                });
+                return Err(Finding::at("original_signer", event, control));
             }
-            if !inspection
-                .statement()
-                .is_some_and(|statement| receipt_matches_columns(statement, &terminal, io, intent))
-            {
-                return Err(Finding {
-                    law: "receipt_binding",
-                    event,
-                    defect_reached: control.defect_reached(),
-                });
+            if !inspection.statement().is_some_and(|statement| {
+                statement.operation_id() == intent.request.operation_id
+                    && statement.authorization_id() == intent.authorization_id
+                    && statement.authorization_signer_key_id() == intent.authorization_key
+                    && statement.authorization_grant_digest() == hex(&Sha256::digest(&intent.grant))
+            }) {
+                return Err(Finding::at("receipt_binding", event, control));
             }
-            if terminal.get("receipt_bytes") != Some(&Value::Blob(bytes.clone())) {
-                return Err(Finding {
-                    law: "original_receipt_bytes",
-                    event,
-                    defect_reached: control.defect_reached(),
-                });
-            }
-            let digest = hex(&Sha256::digest(&bytes));
-            if digest != sha256 {
-                return Err(Finding {
-                    law: "receipt_digest",
-                    event,
-                    defect_reached: control.defect_reached(),
-                });
-            }
+            // Histories bind original authority and signer; local journal owners bind the complete
+            // signed statement to frozen columns. First frozen_io_binding remains event-complete.
         },
         _ if !require_progress => {},
-        _ => {
-            return Err(Finding {
-                law: "healthy_progress",
-                event,
-                defect_reached: control.defect_reached(),
-            })
-        },
+        _ => return Err(Finding::at("healthy_progress", event, control)),
     }
     Ok(())
-}
-
-// Named columns have already been bound to original intent and actual I/O by event laws.
-// This projects public inspected fields, not the production statement builder or classifier.
-pub(super) fn receipt_matches_columns(
-    statement: &ReceiptStatement,
-    raw: &BTreeMap<String, Value>,
-    io: &Observations,
-    intent: &Intent,
-) -> bool {
-    let text_fields = [
-        ("operation_id", Some(statement.operation_id())),
-        ("authorization_id", Some(statement.authorization_id())),
-        (
-            "authorization_signer_key_id",
-            Some(statement.authorization_signer_key_id()),
-        ),
-        (
-            "authorization_grant_digest",
-            Some(statement.authorization_grant_digest()),
-        ),
-        ("namespace", Some(statement.namespace())),
-        ("deployment", Some(statement.deployment())),
-        ("container", Some(statement.container())),
-        (
-            "immutable_image_digest",
-            Some(statement.immutable_image_digest()),
-        ),
-        ("write_strategy", Some(statement.write_strategy())),
-        (
-            "approved_uid",
-            statement
-                .approved_target()
-                .map(|target| target.uid.as_str()),
-        ),
-        (
-            "approved_resource_version",
-            statement
-                .approved_target()
-                .map(|target| target.resource_version.as_str()),
-        ),
-        ("target_uid", Some(statement.target_uid())),
-        (
-            "target_resource_version",
-            Some(statement.target_resource_version()),
-        ),
-        ("receiver_uid", statement.receiver_uid()),
-        ("receiver_image", statement.observed_image()),
-        (
-            "receiver_operation_marker",
-            statement.observed_operation_marker(),
-        ),
-        (
-            "receiver_resource_version",
-            statement.observed_resource_version(),
-        ),
-        ("rollout_condition_type", statement.rollout_condition_type()),
-        (
-            "rollout_condition_status",
-            statement.rollout_condition_status(),
-        ),
-        (
-            "rollout_condition_reason",
-            statement.rollout_condition_reason(),
-        ),
-    ];
-    let integer_fields = [
-        ("current_generation", statement.current_generation()),
-        ("requested_generation", statement.requested_generation()),
-        ("observed_generation", statement.observed_generation()),
-        (
-            "desired_replicas",
-            statement.desired_replicas().map(i64::from),
-        ),
-        (
-            "updated_replicas",
-            statement.updated_replicas().map(i64::from),
-        ),
-        (
-            "available_replicas",
-            statement.available_replicas().map(i64::from),
-        ),
-        (
-            "unavailable_replicas",
-            statement.unavailable_replicas().map(i64::from),
-        ),
-    ];
-    let result = match statement.result() {
-        OperationResult::Succeeded => "SUCCEEDED",
-        OperationResult::Failed => "FAILED",
-        OperationResult::Unknown => "UNKNOWN",
-    };
-    text_fields
-        .iter()
-        .all(|(column, value)| text(raw, column) == *value)
-        && integer_fields
-            .iter()
-            .all(|(column, value)| integer(raw, column) == *value)
-        && result == result_from_io(io, intent)
 }

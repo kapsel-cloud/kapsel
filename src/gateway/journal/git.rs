@@ -494,6 +494,24 @@ fn decode_phase(
 }
 
 #[cfg(test)]
+pub(super) async fn executed_write_statements() -> Vec<(Write, String)> {
+    let mut statements = Vec::new();
+    for write in [
+        Write::Admission,
+        Write::Rejection,
+        Write::Attempt,
+        Write::Response,
+        Write::Observation,
+        Write::Receipt,
+    ] {
+        statements.extend(tests::sqlite_bridge(write, super::Delivery::Confirmed, false).await);
+    }
+    statements
+        .extend(tests::sqlite_bridge(Write::Observation, super::Delivery::Confirmed, true).await);
+    statements
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::gateway::{
@@ -502,7 +520,619 @@ mod tests {
             test_history::{digest, git_binding, open_scratch, trust, History, Scratch},
         },
         tests::storage::copy_closed_journal,
+        OperationResult,
     };
+
+    #[test]
+    fn git_writers_preserve_independent_acknowledgement_and_ref_facts_through_reopen() {
+        for (acknowledgement, token, result) in [
+            (
+                Acknowledgement::Updated,
+                "updated",
+                OperationResult::Succeeded,
+            ),
+            (
+                Acknowledgement::RejectedBeforeSend,
+                "rejected_before_send",
+                OperationResult::Failed,
+            ),
+            (
+                Acknowledgement::ReceiverRejected,
+                "receiver_rejected",
+                OperationResult::Failed,
+            ),
+            (
+                Acknowledgement::Unknown,
+                "unknown",
+                OperationResult::Unknown,
+            ),
+        ] {
+            for (observed, kind, commit) in [
+                (
+                    ObservedRef::Commit("a".repeat(40)),
+                    "commit",
+                    Some("a".repeat(40)),
+                ),
+                (
+                    ObservedRef::Commit("b".repeat(40)),
+                    "commit",
+                    Some("b".repeat(40)),
+                ),
+                (ObservedRef::Missing, "missing", None),
+                (ObservedRef::Unknown, "unknown", None),
+            ] {
+                git_mapping(
+                    acknowledgement,
+                    token,
+                    &observed,
+                    kind,
+                    commit.as_deref(),
+                    result,
+                );
+            }
+        }
+    }
+
+    fn git_mapping(
+        acknowledgement: Acknowledgement,
+        token: &str,
+        observed: &ObservedRef,
+        kind: &str,
+        commit: Option<&str>,
+        result: OperationResult,
+    ) {
+        use crate::gateway::journal::test_history::named_git_row;
+
+        let scratch = Scratch::new();
+        let expected_scratch = Scratch::new();
+        let journal = open_scratch(&scratch);
+        let expected_journal = open_scratch(&expected_scratch);
+        let binding = git_binding("git-mapping");
+        authored_phase(&journal.connection, &binding, "apply_started");
+        authored_phase(&expected_journal.connection, &binding, "apply_started");
+        let peer = git_binding("untouched-git-peer");
+        authored_phase(&journal.connection, &peer, "finalized");
+        let peer_before = named_git_row(&journal.connection, "untouched-git-peer");
+        expected_journal
+            .connection
+            .execute(
+                "UPDATE git_ref_operations SET state = 'receiver_observed', acknowledgement = ?1,
+             observed_ref_kind = ?2, observed_commit = ?3 WHERE operation_id = 'git-mapping'",
+                rusqlite::params![token, kind, commit],
+            )
+            .unwrap();
+        let expected_statement = evidence::GitStatement {
+            authorization: binding.authorization().clone(),
+            authorization_signer: "snapshot-signer".into(),
+            authorization_digest: digest(binding.signed_grant()),
+            acknowledgement,
+            observed: observed.clone(),
+        };
+        let worker = journal.try_lock_worker().unwrap().unwrap();
+        journal
+            .record_git_acknowledgement(&binding, acknowledgement, &worker)
+            .unwrap();
+        journal
+            .freeze_git_observation(&binding, observed, &worker)
+            .unwrap();
+        let expected_row = named_git_row(&expected_journal.connection, "git-mapping");
+        assert_eq!(
+            named_git_row(&journal.connection, "git-mapping"),
+            expected_row
+        );
+        let expected_phase = GitPhase::Observed {
+            acknowledgement,
+            observed: observed.clone(),
+        };
+        assert_eq!(
+            journal.git_operation(&binding).unwrap(),
+            Some(expected_phase.clone())
+        );
+        let actual = journal
+            .git_operation(&binding)
+            .unwrap()
+            .unwrap()
+            .statement(&binding)
+            .unwrap();
+        assert_eq!(actual, expected_statement);
+        assert_eq!(actual.result(), result);
+        assert_eq!(
+            named_git_row(&journal.connection, "untouched-git-peer"),
+            peer_before
+        );
+        drop(worker);
+        drop(journal);
+        let reopened = open_scratch(&scratch);
+        assert_eq!(
+            named_git_row(&reopened.connection, "git-mapping"),
+            expected_row
+        );
+        assert_eq!(
+            reopened.git_operation(&binding).unwrap(),
+            Some(expected_phase)
+        );
+        assert_eq!(
+            reopened
+                .git_operation(&binding)
+                .unwrap()
+                .unwrap()
+                .statement(&binding),
+            Some(expected_statement)
+        );
+        assert_eq!(
+            named_git_row(&reopened.connection, "untouched-git-peer"),
+            peer_before
+        );
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one public projection table binds all phases and terminal results"
+    )]
+    fn public_git_reads_preserve_literal_phase_authority_acknowledgement_and_receipt() {
+        use crate::{
+            application::{
+                OperationReceipt, OperationStatus, ServiceApplication, ServiceConfiguration,
+            },
+            gateway::{
+                journal::test_history::named_git_row, GitOperationTargets, OperationTargets,
+                TargetRejection,
+            },
+        };
+
+        for (phase, acknowledgement, token, expected_status) in [
+            (
+                "authorized",
+                Acknowledgement::Unknown,
+                "unknown",
+                OperationStatus::InProgress,
+            ),
+            (
+                "not_attempted",
+                Acknowledgement::Unknown,
+                "unknown",
+                OperationStatus::NotAttempted(TargetRejection::GitStaleRef),
+            ),
+            (
+                "apply_started",
+                Acknowledgement::Unknown,
+                "unknown",
+                OperationStatus::InProgress,
+            ),
+            (
+                "receiver_observed",
+                Acknowledgement::Unknown,
+                "unknown",
+                OperationStatus::InProgress,
+            ),
+            (
+                "finalized",
+                Acknowledgement::Unknown,
+                "unknown",
+                OperationStatus::Unknown,
+            ),
+            (
+                "finalized",
+                Acknowledgement::Updated,
+                "updated",
+                OperationStatus::Succeeded,
+            ),
+            (
+                "finalized",
+                Acknowledgement::ReceiverRejected,
+                "receiver_rejected",
+                OperationStatus::Failed,
+            ),
+        ] {
+            let scratch = Scratch::new();
+            let journal = open_scratch(&scratch);
+            let binding = git_binding("public-git-read");
+            authored_phase(&journal.connection, &binding, phase);
+            let statement = evidence::GitStatement {
+                authorization: binding.authorization().clone(),
+                authorization_signer: "snapshot-signer".into(),
+                authorization_digest: digest(binding.signed_grant()),
+                acknowledgement,
+                observed: ObservedRef::Commit("b".repeat(40)),
+            };
+            let receipt = evidence::sign(&statement, &[9; 32], "bridge-receipt-key").unwrap();
+            if phase == "finalized" {
+                journal
+                    .connection
+                    .execute(
+                        "UPDATE git_ref_operations SET acknowledgement = ?1, receipt_bytes = ?2,
+                     receipt_digest = ?3 WHERE operation_id = 'public-git-read'",
+                        rusqlite::params![token, receipt, digest(&receipt)],
+                    )
+                    .unwrap();
+            }
+            let before = named_git_row(&journal.connection, "public-git-read");
+            drop(journal);
+            let control = records::Control::default();
+            let app = ServiceApplication::open_simulated(
+                ServiceConfiguration {
+                    journal_path: scratch.0.join("journal.sqlite3"),
+                    authorization_trust: vec![trust()],
+                    approvals: vec![],
+                },
+                control.clone(),
+            )
+            .unwrap();
+            let frozen = matches!(phase, "receiver_observed" | "finalized");
+            let expected_targets = OperationTargets {
+                approved_target: None,
+                observed_target: None,
+                attempt_target: None,
+                git: Some(GitOperationTargets {
+                    approval: binding.authorization().clone(),
+                    attempted: matches!(phase, "apply_started" | "receiver_observed" | "finalized"),
+                    acknowledgement: frozen.then_some(acknowledgement),
+                    observed_ref: frozen.then(|| ObservedRef::Commit("b".repeat(40))),
+                }),
+            };
+            assert_eq!(
+                app.status("public-git-read").unwrap(),
+                (expected_status, expected_targets.clone())
+            );
+            let expected_receipt = if phase == "finalized" {
+                OperationReceipt::Ready {
+                    bytes: receipt.clone(),
+                    sha256: digest(&receipt),
+                }
+            } else {
+                OperationReceipt::NotReady
+            };
+            assert_eq!(app.receipt("public-git-read").unwrap(), expected_receipt);
+            let page = app.history(None).unwrap();
+            assert_eq!(page.entries.len(), 1);
+            assert_eq!(page.entries[0].operation_id, "public-git-read");
+            assert_eq!(
+                page.entries[0].status,
+                Ok((expected_status, expected_targets))
+            );
+            assert!(page.next_cursor.is_none());
+            assert!(
+                control.events().is_empty(),
+                "reads perform no durable transition"
+            );
+            drop(app);
+            let reopened = open_scratch(&scratch);
+            assert_eq!(
+                named_git_row(&reopened.connection, "public-git-read"),
+                before
+            );
+        }
+    }
+
+    #[test]
+    fn ref_b_without_a_retained_acknowledgement_remains_unknown_at_the_local_writer() {
+        use crate::gateway::journal::test_history::named_git_row;
+
+        for defect in [false, true] {
+            let scratch = Scratch::new();
+            let mut journal = open_scratch(&scratch);
+            let binding = git_binding("no-acknowledgement");
+            authored_phase(&journal.connection, &binding, "apply_started");
+            let control = records::Control::default();
+            if defect {
+                control.seed(records::Defect::GitInferredAcknowledgement);
+            }
+            journal.control_storage(control.clone());
+            let worker = journal.try_lock_worker().unwrap().unwrap();
+            journal
+                .freeze_git_observation(&binding, &ObservedRef::Commit("b".repeat(40)), &worker)
+                .unwrap();
+            let row = named_git_row(&journal.connection, "no-acknowledgement");
+            let matches = row["acknowledgement"] == rusqlite::types::Value::Text("unknown".into());
+            assert_eq!(
+                matches, !defect,
+                "ref observation must not invent original acknowledgement"
+            );
+            if defect {
+                assert!(control
+                    .defect_reached()
+                    .contains(&records::Defect::GitInferredAcknowledgement));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn git_sqlite_bridge_consumes_all_six_writes_under_three_deliveries() {
+        for write in [
+            Write::Admission,
+            Write::Rejection,
+            Write::Attempt,
+            Write::Response,
+            Write::Observation,
+            Write::Receipt,
+        ] {
+            for delivery in [
+                records::Delivery::Confirmed,
+                records::Delivery::NoCommit,
+                records::Delivery::LostAcknowledgement,
+            ] {
+                sqlite_bridge(write, delivery, false).await;
+            }
+        }
+    }
+
+    // This row builder uses only literal SQL and independently supplied grant/statement bytes.
+    fn authored_phase(connection: &Connection, binding: &GitBinding, phase: &str) -> GitPhase {
+        let statement = evidence::GitStatement {
+            authorization: binding.authorization().clone(),
+            authorization_signer: "snapshot-signer".into(),
+            authorization_digest: digest(binding.signed_grant()),
+            acknowledgement: Acknowledgement::Unknown,
+            observed: ObservedRef::Commit("b".repeat(40)),
+        };
+        connection
+            .execute(
+                "INSERT INTO git_ref_operations (operation_id, repository_id, ref_name, old_commit,
+             new_commit, authorization_id, authorization_signer_key_id, authorization_grant_digest,
+             signed_authorization_grant, state)
+             VALUES (?1, 'repository', 'refs/heads/approved', ?2, ?3, 'approval',
+             'snapshot-signer', ?4, ?5, ?6)",
+                rusqlite::params![
+                    binding.authorization().operation_id,
+                    "a".repeat(40),
+                    "b".repeat(40),
+                    digest(binding.signed_grant()),
+                    binding.signed_grant(),
+                    phase
+                ],
+            )
+            .unwrap();
+        match phase {
+            "authorized" => GitPhase::Authorized,
+            "not_attempted" => {
+                connection
+                    .execute(
+                        "UPDATE git_ref_operations SET target_rejection = 'stale_ref'
+                         WHERE operation_id = ?1",
+                        [&binding.authorization().operation_id],
+                    )
+                    .unwrap();
+                GitPhase::NotAttempted(GitRejection::StaleRef)
+            },
+            "apply_started" => GitPhase::Attempted(None),
+            "receiver_observed" | "finalized" => {
+                connection
+                    .execute(
+                        "UPDATE git_ref_operations SET acknowledgement = 'unknown',
+                     observed_ref_kind = 'commit', observed_commit = ?1
+                     WHERE operation_id = ?2",
+                        rusqlite::params!["b".repeat(40), binding.authorization().operation_id],
+                    )
+                    .unwrap();
+                if phase == "receiver_observed" {
+                    GitPhase::Observed {
+                        acknowledgement: Acknowledgement::Unknown,
+                        observed: ObservedRef::Commit("b".repeat(40)),
+                    }
+                } else {
+                    let bytes = evidence::sign(&statement, &[9; 32], "bridge-receipt-key").unwrap();
+                    connection
+                        .execute(
+                            "UPDATE git_ref_operations SET receipt_bytes = ?1, receipt_digest = ?2,
+                         receipt_key_id = 'bridge-receipt-key' WHERE operation_id = ?3",
+                            rusqlite::params![
+                                bytes,
+                                digest(&bytes),
+                                binding.authorization().operation_id
+                            ],
+                        )
+                        .unwrap();
+                    GitPhase::Finalized {
+                        statement: Box::new(statement),
+                        receipt: FrozenReceipt {
+                            operation_id: binding.authorization().operation_id.clone(),
+                            digest: digest(&bytes),
+                            bytes,
+                            key_id: "bridge-receipt-key".into(),
+                        },
+                    }
+                }
+            },
+            _ => unreachable!("authored phases are fixed test inputs"),
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "six independent row transitions each bind one write, not full histories"
+    )]
+    pub(super) async fn sqlite_bridge(
+        write: Write,
+        delivery: records::Delivery,
+        absent_commit: bool,
+    ) -> Vec<(Write, String)> {
+        use crate::gateway::{
+            git::exploration::Script,
+            journal::test_history::{named_git_row, named_kube_row},
+        };
+
+        let scratch = Scratch::new();
+        let expected_scratch = Scratch::new();
+        let mut journal = open_scratch(&scratch);
+        let expected_journal = open_scratch(&expected_scratch);
+        let binding = git_binding("sqlite-git-bridge");
+        let (prior, next) = match write {
+            Write::Admission => (None, "authorized"),
+            Write::Rejection => (Some("authorized"), "not_attempted"),
+            Write::Attempt => (Some("authorized"), "apply_started"),
+            Write::Response => (Some("apply_started"), "apply_started"),
+            Write::Observation => (Some("apply_started"), "receiver_observed"),
+            Write::Receipt => (Some("receiver_observed"), "finalized"),
+            Write::Authorization => unreachable!("Git has no separate authorization write"),
+        };
+        let prior_phase = prior.map(|phase| {
+            let expected = authored_phase(&journal.connection, &binding, phase);
+            authored_phase(&expected_journal.connection, &binding, phase);
+            assert_eq!(
+                journal.git_operation(&binding).unwrap(),
+                Some(expected.clone())
+            );
+            expected
+        });
+        let peer = History::kube("untouched-kube-peer");
+        peer.insert(&journal.connection, "finalized");
+        let peer_before = named_kube_row(&journal.connection, "untouched-kube-peer");
+        let git_peer = git_binding("untouched-git-peer");
+        let git_peer_phase = authored_phase(&journal.connection, &git_peer, "finalized");
+        assert_eq!(
+            journal.git_operation(&git_peer).unwrap(),
+            Some(git_peer_phase)
+        );
+        let git_peer_before = named_git_row(&journal.connection, "untouched-git-peer");
+        let before = named_git_row(&journal.connection, "sqlite-git-bridge");
+        assert_eq!(
+            before,
+            named_git_row(&expected_journal.connection, "sqlite-git-bridge")
+        );
+        expected_journal
+            .connection
+            .execute("DELETE FROM git_ref_operations", [])
+            .unwrap();
+        let baseline = authored_phase(&expected_journal.connection, &binding, next);
+        let next_phase = if write == Write::Response {
+            expected_journal
+                .connection
+                .execute(
+                    "UPDATE git_ref_operations SET acknowledgement = 'receiver_rejected'",
+                    [],
+                )
+                .unwrap();
+            GitPhase::Attempted(Some(Acknowledgement::ReceiverRejected))
+        } else if write == Write::Observation && absent_commit {
+            expected_journal
+                .connection
+                .execute(
+                    concat!(
+                        "UPDATE git_ref_operations SET ",
+                        "observed_ref_kind = 'missing', observed_commit = NULL"
+                    ),
+                    [],
+                )
+                .unwrap();
+            GitPhase::Observed {
+                acknowledgement: Acknowledgement::Unknown,
+                observed: ObservedRef::Missing,
+            }
+        } else {
+            baseline
+        };
+        let next_row = named_git_row(&expected_journal.connection, "sqlite-git-bridge");
+        assert!(!next_row.is_empty());
+        assert_ne!(before, next_row);
+        let control = records::Control::default();
+        control.fail_next(write, delivery);
+        journal.control_storage(control.clone());
+        let worker = journal.try_lock_worker().unwrap().unwrap();
+        let result = match write {
+            Write::Admission => journal.insert_git(&binding, &worker).map(|phase| {
+                assert_eq!(phase, GitPhase::Authorized);
+            }),
+            Write::Rejection => journal.reject_git(&binding, GitRejection::StaleRef, &worker),
+            Write::Attempt => {
+                let script = Script::new(
+                    binding.authorization().clone(),
+                    scratch.0.join("journal.sqlite3"),
+                    control.clone(),
+                );
+                let prepared = script
+                    .receiver()
+                    .prepare(binding.authorization())
+                    .await
+                    .unwrap();
+                journal
+                    .begin_git_attempt(&binding, prepared, &worker)
+                    .map(drop)
+            },
+            Write::Response => journal.record_git_acknowledgement(
+                &binding,
+                Acknowledgement::ReceiverRejected,
+                &worker,
+            ),
+            Write::Observation => journal.freeze_git_observation(
+                &binding,
+                &if absent_commit {
+                    ObservedRef::Missing
+                } else {
+                    ObservedRef::Commit("b".repeat(40))
+                },
+                &worker,
+            ),
+            Write::Receipt => {
+                let statement = evidence::GitStatement {
+                    authorization: binding.authorization().clone(),
+                    authorization_signer: "snapshot-signer".into(),
+                    authorization_digest: digest(binding.signed_grant()),
+                    acknowledgement: Acknowledgement::Unknown,
+                    observed: ObservedRef::Commit("b".repeat(40)),
+                };
+                let bytes = evidence::sign(&statement, &[9; 32], "bridge-receipt-key").unwrap();
+                journal.commit_git_receipt(&binding, &bytes, &worker)
+            },
+            Write::Authorization => unreachable!(),
+        };
+        match delivery {
+            records::Delivery::Confirmed => assert!(result.is_ok(), "{write:?}: {result:?}"),
+            records::Delivery::NoCommit | records::Delivery::LostAcknowledgement => {
+                assert!(matches!(result, Err(GatewayError::InjectedFault)));
+            },
+        }
+        let events = control.events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].operation_id, "sqlite-git-bridge");
+        assert_eq!(events[0].effect, "Git");
+        assert_eq!(events[0].write, write);
+        assert_eq!(events[0].delivery, delivery);
+        assert!(
+            events[0].consumed,
+            "targeted write must consume its delivery"
+        );
+        let (expected_row, expected_phase) = if delivery == records::Delivery::NoCommit {
+            (before, prior_phase)
+        } else {
+            (next_row, Some(next_phase))
+        };
+        assert_eq!(
+            named_git_row(&journal.connection, "sqlite-git-bridge"),
+            expected_row
+        );
+        assert_eq!(journal.git_operation(&binding).unwrap(), expected_phase);
+        assert_eq!(
+            named_kube_row(&journal.connection, "untouched-kube-peer"),
+            peer_before
+        );
+        assert_eq!(
+            named_git_row(&journal.connection, "untouched-git-peer"),
+            git_peer_before,
+            "same-table peer survives delivery"
+        );
+        let sql = control.executed_sql();
+        assert_eq!(sql.len(), 1);
+        assert_eq!(sql[0].0, write);
+        drop(worker);
+        drop(journal);
+        let reopened = open_scratch(&scratch);
+        assert_eq!(
+            named_git_row(&reopened.connection, "sqlite-git-bridge"),
+            expected_row
+        );
+        assert_eq!(reopened.git_operation(&binding).unwrap(), expected_phase);
+        assert_eq!(
+            named_git_row(&reopened.connection, "untouched-git-peer"),
+            git_peer_before,
+            "same-table peer survives reopen"
+        );
+        assert_eq!(
+            named_kube_row(&reopened.connection, "untouched-kube-peer"),
+            peer_before
+        );
+        sql
+    }
 
     #[test]
     #[allow(

@@ -2,6 +2,10 @@
 use super::*;
 
 pub(super) fn git_approval(id: &str) -> ServiceApproval {
+    git_approval_with_key(id, "a")
+}
+
+pub(super) fn git_approval_with_key(id: &str, key_id: &str) -> ServiceApproval {
     let authorization = kapsel_authority::GitRefAuthorization {
         operation_id: id.into(),
         authorization_id: format!("git-{id}"),
@@ -12,7 +16,8 @@ pub(super) fn git_approval(id: &str) -> ServiceApproval {
     };
     ServiceApproval {
         label: "Exact Git transition".into(),
-        signed_grant: kapsel_authority::sign_git_ref_grant(&authorization, &[41; 32], "a").unwrap(),
+        signed_grant: kapsel_authority::sign_git_ref_grant(&authorization, &[41; 32], key_id)
+            .unwrap(),
     }
 }
 

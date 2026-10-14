@@ -18,6 +18,24 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Prepare supported local Git (job-local)
+        shell: bash
+        run: |
+          set -eu
+          source_dir="$RUNNER_TEMP/kapsel-git-source"
+          prefix="$RUNNER_TEMP/kapsel-git-2.55.0"
+          mkdir "$source_dir"
+          curl --fail --location --max-time 120 \
+            https://www.kernel.org/pub/software/scm/git/git-2.55.0.tar.xz \
+            -o "$source_dir/git.tar.xz"
+          printf '%s  %s\n' \
+            457fdb04dc8728e007d4688695e6912e6f680727920f2a40bf11eacc17505357 \
+            "$source_dir/git.tar.xz" | sha256sum --check
+          tar -xf "$source_dir/git.tar.xz" -C "$source_dir"
+          make -C "$source_dir/git-2.55.0" -j2 prefix="$prefix" \
+            NO_GETTEXT=YesPlease NO_TCLTK=YesPlease NO_CURL=YesPlease \
+            NO_EXPAT=YesPlease NO_PERL=YesPlease install
+          echo "KAPSEL_TEST_GIT=$prefix/bin/git" >> "$GITHUB_ENV"
       - name: Prepare pinned contributor tools
         run: ./scripts/setup.sh
       - uses: Swatinem/rust-cache@v2

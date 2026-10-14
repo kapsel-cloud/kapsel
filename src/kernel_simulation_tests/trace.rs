@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::gateway::{Defect, Delivery, FaultPoint, StorageWrite, WriteEvent};
+use crate::gateway::{Defect, Delivery, FaultPoint, StorageControl, StorageWrite, WriteEvent};
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub(super) enum Receiver {
@@ -13,6 +13,7 @@ pub(super) enum Receiver {
     StaleVersion,
     WrongGeneration,
     Unavailable,
+    MissingFacts,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -113,6 +114,16 @@ pub(super) struct Finding {
     pub(super) law: &'static str,
     pub(super) event: usize,
     pub(super) defect_reached: Vec<Defect>,
+}
+
+impl Finding {
+    pub(super) fn at(law: &'static str, event: usize, control: &StorageControl) -> Self {
+        Self {
+            law,
+            event,
+            defect_reached: control.defect_reached(),
+        }
+    }
 }
 
 #[derive(Default, Debug, Serialize)]

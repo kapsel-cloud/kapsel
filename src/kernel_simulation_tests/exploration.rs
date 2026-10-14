@@ -208,6 +208,8 @@ pub(super) fn deliberate_inputs() -> Vec<Trace> {
         (Cut::ObservationLost, Receiver::Pending),
         (Cut::Frozen, Receiver::Replaced),
         (Cut::None, Receiver::StaleVersion),
+        (Cut::ResponseLost, Receiver::MissingFacts),
+        (Cut::ObservationLost, Receiver::MissingFacts),
     ];
     assignments(2)
         .into_iter()
@@ -286,16 +288,14 @@ pub(super) fn deliberate_inputs() -> Vec<Trace> {
     clippy::too_many_lines,
     reason = "keep each seeded defect with its intended law and reached input"
 )]
-pub(super) fn defect_cases() -> Vec<(Defect, &'static str, Vec<Action>)> {
+pub(super) fn defect_cases() -> Vec<(Defect, Vec<Action>)> {
     vec![
         (
             Defect::CustodyIgnored,
-            "custody_after_io",
             vec![Action::CustodyDuringIo(IoPoint::Mutation)],
         ),
         (
             Defect::StaleTrust,
-            "original_trust_disclosure",
             vec![
                 select(None, Cut::BeforeAttempt, false, false),
                 Action::SubstituteTrustKey,
@@ -303,7 +303,6 @@ pub(super) fn defect_cases() -> Vec<(Defect, &'static str, Vec<Action>)> {
         ),
         (
             Defect::CatalogConflictAccepted,
-            "catalog_identity_conflict",
             vec![
                 select(None, Cut::BeforeAttempt, false, false),
                 Action::ReplaceCatalog,
@@ -311,7 +310,6 @@ pub(super) fn defect_cases() -> Vec<(Defect, &'static str, Vec<Action>)> {
         ),
         (
             Defect::GitInferredAcknowledgement,
-            "git_acknowledgement_binding",
             vec![
                 select(None, Cut::Unsent, false, false),
                 Action::GitRef { new: true },
@@ -320,12 +318,10 @@ pub(super) fn defect_cases() -> Vec<(Defect, &'static str, Vec<Action>)> {
         ),
         (
             Defect::GitObservationSubstitution,
-            "frozen_io_binding",
             vec![select(None, Cut::Frozen, false, false)],
         ),
         (
             Defect::ReceiptRewrite,
-            "original_receipt_bytes",
             vec![
                 select(None, Cut::None, false, true),
                 Action::Peer(1),
@@ -334,12 +330,10 @@ pub(super) fn defect_cases() -> Vec<(Defect, &'static str, Vec<Action>)> {
         ),
         (
             Defect::Remint,
-            "dispatch_provenance",
             vec![select(None, Cut::Unsent, false, false)],
         ),
         (
             Defect::Remint,
-            "dispatch_provenance",
             vec![Action::CancelAtIo {
                 point: IoPoint::Mutation,
                 contender: 1,
@@ -347,28 +341,14 @@ pub(super) fn defect_cases() -> Vec<(Defect, &'static str, Vec<Action>)> {
         ),
         (
             Defect::InitialUnknown,
-            "initial_result",
-            vec![select(None, Cut::Frozen, false, false)],
-        ),
-        (Defect::NoOp, "healthy_progress", vec![]),
-        (
-            Defect::StatusProjectionSwap,
-            "stored_read_projection",
             vec![select(None, Cut::Frozen, false, false)],
         ),
         (
-            Defect::DispositionProjectionSwap,
-            "execution_disposition_projection",
-            vec![select(None, Cut::BeforeAttempt, false, false)],
-        ),
-        (
-            Defect::TargetProjectionSwap,
-            "stored_read_projection",
-            vec![select(None, Cut::BeforeAttempt, false, false)],
+            Defect::NoOp,
+            vec![select(None, Cut::None, false, true), Action::AssertProgress],
         ),
         (
             Defect::WrongPeerRead,
-            "original_intent",
             vec![
                 select(None, Cut::BeforeAttempt, false, false),
                 Action::Peer(1),
@@ -377,7 +357,6 @@ pub(super) fn defect_cases() -> Vec<(Defect, &'static str, Vec<Action>)> {
         ),
         (
             Defect::WrongSigner,
-            "original_signer",
             vec![
                 select(None, Cut::Frozen, false, false),
                 Action::ReplaceCatalog,
@@ -386,29 +365,13 @@ pub(super) fn defect_cases() -> Vec<(Defect, &'static str, Vec<Action>)> {
                 select(None, Cut::None, false, true),
             ],
         ),
-        (
-            Defect::ReceiptProjectionSwap,
-            "receipt_binding",
-            vec![
-                Action::Receiver(Receiver::Pending),
-                select(None, Cut::Frozen, false, false),
-            ],
-        ),
-        (
-            Defect::ReplicaSwap,
-            "frozen_io_binding",
-            vec![
-                Action::Receiver(Receiver::Pending),
-                select(None, Cut::Frozen, false, false),
-            ],
-        ),
     ]
 }
 
 pub(super) fn defect_inputs() -> Vec<Trace> {
     defect_cases()
         .into_iter()
-        .flat_map(|(defect, _, prefix)| {
+        .flat_map(|(defect, prefix)| {
             let assignments = match defect {
                 Defect::GitInferredAcknowledgement | Defect::GitObservationSubstitution => {
                     vec![vec![Effect::Git; 2]]
@@ -416,10 +379,8 @@ pub(super) fn defect_inputs() -> Vec<Trace> {
                 Defect::ReceiptRewrite => {
                     vec![vec![Effect::Git; 2], vec![Effect::Git, Effect::Kubernetes]]
                 },
-                Defect::WrongSigner
-                | Defect::StatusProjectionSwap
-                | Defect::TargetProjectionSwap
-                | Defect::DispositionProjectionSwap
+                Defect::NoOp
+                | Defect::WrongSigner
                 | Defect::CatalogConflictAccepted
                 | Defect::StaleTrust
                 | Defect::CustodyIgnored => vec![
@@ -434,10 +395,8 @@ pub(super) fn defect_inputs() -> Vec<Trace> {
                 input.effects = effects;
                 if matches!(
                     defect,
-                    Defect::WrongSigner
-                        | Defect::StatusProjectionSwap
-                        | Defect::TargetProjectionSwap
-                        | Defect::DispositionProjectionSwap
+                    Defect::NoOp
+                        | Defect::WrongSigner
                         | Defect::CatalogConflictAccepted
                         | Defect::StaleTrust
                         | Defect::CustodyIgnored
@@ -458,13 +417,13 @@ pub(super) fn defect_law(defect: Defect) -> &'static str {
         Defect::InitialUnknown => "initial_result",
         Defect::NoOp => "healthy_progress",
         Defect::UnconditionalWrite => "conditional_binding",
-        Defect::ReplicaSwap | Defect::GitObservationSubstitution => "frozen_io_binding",
+        Defect::GitObservationSubstitution => "frozen_io_binding",
+        Defect::ReplicaSwap | Defect::ReceiptProjectionSwap => {
+            unreachable!("local mapping controls are not serialized history inputs")
+        },
         Defect::ReceiptRewrite => "original_receipt_bytes",
-        Defect::StatusProjectionSwap | Defect::TargetProjectionSwap => "stored_read_projection",
-        Defect::DispositionProjectionSwap => "execution_disposition_projection",
         Defect::WrongSigner => "original_signer",
         Defect::WrongPeerRead => "original_intent",
-        Defect::ReceiptProjectionSwap => "receipt_binding",
         Defect::GitInferredAcknowledgement => "git_acknowledgement_binding",
         Defect::CatalogConflictAccepted => "catalog_identity_conflict",
         Defect::StaleTrust => "original_trust_disclosure",
@@ -504,7 +463,7 @@ pub(super) fn durable_writes(effect: Effect) -> Vec<StorageWrite> {
     writes
 }
 
-fn delivery_prefix(write: StorageWrite, delivery: Delivery) -> Vec<Action> {
+fn delivery_prefix(write: StorageWrite, delivery: Delivery, reopened: bool) -> Vec<Action> {
     let mut actions = vec![
         Action::Peer(1),
         select(None, Cut::BeforeAttempt, false, false),
@@ -527,7 +486,16 @@ fn delivery_prefix(write: StorageWrite, delivery: Delivery) -> Vec<Action> {
         StorageWrite::Receipt => actions.push(select(None, Cut::Frozen, false, false)),
     }
     if write == StorageWrite::Rejection {
-        actions.push(Action::Receiver(Receiver::StaleVersion));
+        if reopened {
+            actions.push(Action::Reopen { catalog: false });
+        }
+        actions.push(Action::Receiver(
+            if reopened && delivery == Delivery::NoCommit {
+                Receiver::Replaced
+            } else {
+                Receiver::StaleVersion
+            },
+        ));
     }
     actions.push(select(Some((write, delivery)), Cut::None, false, true));
     actions
@@ -558,7 +526,7 @@ pub(super) fn delivery_inputs() -> Vec<Trace> {
                 ]
                 .into_iter()
                 .map(move |delivery| {
-                    let mut actions = delivery_prefix(write, delivery);
+                    let mut actions = delivery_prefix(write, delivery, true);
                     warm_finish(&mut actions, 2);
                     let mut input = multi_trace(0, 2, actions);
                     input.effects = vec![effect; 2];
@@ -587,6 +555,7 @@ pub(super) fn generated(seed: u64, steps: usize) -> Trace {
                     Delivery::NoCommit,
                     Delivery::LostAcknowledgement,
                 ][index % 3],
+                false,
             )
         },
         1 => {
@@ -764,23 +733,6 @@ async fn retain_finding(
 }
 
 pub(super) async fn explore_or_replay() {
-    if let Ok(directory) = std::env::var("KAPSEL_KERNEL_REPLAY_DIRECTORY") {
-        let directory = PathBuf::from(directory);
-        assert!(directory.is_absolute() && fs::symlink_metadata(&directory).unwrap().is_dir());
-        let mut paths = fs::read_dir(directory)
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .collect::<Vec<_>>();
-        assert!((1..=10_000).contains(&paths.len()));
-        paths.sort();
-        for path in &paths {
-            let input = read_trace(path);
-            assert!(input.defect.is_none() && input.require_progress);
-            check_replay_result(&input, replay(&input, true).await);
-        }
-        println!("KAPSEL_KERNEL_REPLAYED cases={}", paths.len());
-        return;
-    }
     if let Ok(path) = std::env::var("KAPSEL_KERNEL_REPLAY") {
         let path = PathBuf::from(path);
         let input = read_trace(&path);

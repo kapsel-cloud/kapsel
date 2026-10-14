@@ -28,9 +28,11 @@ cargo xtask doctor
 
 Setup installs the selected Rust toolchain, pinned nightly rustfmt, and the formatting/checking
 tools beneath `$HOME/.local/share/kapsel/dev-tools`. It reuses matching tools and needs network
-access for missing ones. It changes neither shell profiles nor Git hooks. `doctor` checks without
-installing or rewriting source; Cargo may first prepare xtask. Use `./scripts/setup.sh --check` on
-an unprepared host to bypass that bootstrap.
+access for missing ones. Setup and doctor resolve an absolute Git 2.55.0 executable from
+`KAPSEL_TEST_GIT` or PATH. Install that Git version explicitly if missing; checks never download it.
+It changes neither shell profiles nor Git hooks. `doctor` checks without installing or rewriting
+source; Cargo may first prepare xtask. Use `./scripts/setup.sh --check` on an unprepared host to
+bypass that bootstrap.
 
 [`tools/dev/dev-tools.sh`](../../tools/dev/dev-tools.sh) owns contributor-tool versions. CI uses the
 same setup and contributor-tool pins. GitHub Action references are specified separately in each
@@ -41,7 +43,7 @@ workflow.
 
 ```sh
 cargo xtask fmt
-cargo xtask ci
+cargo xtask check
 ```
 
 Formatting runs Markdown, Rust, and Python, including fuzz sources and Python fixtures. It does not
@@ -54,19 +56,53 @@ overrides retain debug assertions and overflow checks. Repeated authenticated re
 cryptography without unoptimized curve arithmetic dominating simulation time. These overrides do not
 change production profiles or authentication policy.
 
-For a smaller iteration:
+Use the fixed six-area router:
 
 ```sh
-cargo xtask fmt-check
-cargo xtask ci static  # formatting, lint, types, links, and tooling regressions
-cargo xtask ci rust    # Clippy, rustdoc, and deterministic Rust tests
-cargo xtask ci doc     # Rust doctests
+cargo xtask test core       # focused deterministic iteration
+cargo xtask check core      # completed change within one implementation owner
+cargo xtask check docs      # prose-only correction
+cargo xtask check           # shared contracts, dependencies, gate wiring, or uncertain scope
 ```
 
-Documentation-only changes need formatting, local link and anchor checks, terminology review, and
-`git diff --check`. Changed examples also need their owning executable check. Cross-cutting code or
-contract changes need the full deterministic gate and any relevant platform, live, or artifact lane.
-Missing prerequisites mean missing evidence, not a passing substitute.
+| Area      | Deterministic owners                                                                 |
+| --------- | ------------------------------------------------------------------------------------ |
+| authority | Grant grammar, authentication, framing, vectors and shared corpus                    |
+| core      | Application, effects, journal, histories, CLI, receipt/document corpus and local Git |
+| service   | Daemon, runtime, wire, client, MCP, Linux source processes and fresh-session caller  |
+| tools     | xtask, setup, format, robustness, source/security/link checker regressions           |
+| release   | Offline artifact, assembly/controller/verifier regressions and installed assets      |
+| docs      | Prose format, local links/anchors, source privacy and diff whitespace                |
+
+`tools/dev/run_checks.py` owns selection. Completion scopes include applicable formatting, lints,
+types and diff checks. Unscoped check runs default workspace targets once, rustdoc/doctests and
+explicit deterministic fuzz replay. Shared corpus selection remains coarse until its local-owner
+cutover. Source formatting currently checks all languages for non-docs scopes; Python types cover
+the maintained project on both platform targets.
+
+On Linux, service/all also execute the named `test-harness` process and MCP targets and the
+feature-only client cases. They build the inspector and run the caller against the real bridge.
+These are source-composition witnesses, not installed production-byte proof. Other hosts report
+these missing Linux obligations, supplied by Linux PR CI. Core/all explicitly run the ignored
+`gateway::git::tests::real_git_` group with the resolved Git executable. Each selected target/group
+is listed with identical features and filters and must be nonempty. Runtime executable paths come
+from Cargo artifact messages, including configured target directories; the router does not guess
+paths beneath `target/debug`. No blanket ignored-test run can start ENOSPC or child fixtures.
+
+A one-owner implementation change with unchanged shared contracts needs that area's check. Shared
+contracts, dependencies, gate wiring and uncertain scope need unscoped check. Prose-only changes
+need `check docs` and terminology review; changed executable procedures need their owning check. Add
+only qualification required by a changed physical premise. Once that set passes on the final inputs,
+stop; do not rerun included leaves, pre-push gates, exploration or release builds for reassurance.
+Missing prerequisites mean incomplete evidence, not a passing substitute.
+
+Checks print owners, selected prerequisites, elapsed time, command count and outcome. Cargo caches
+are compilation reuse, not a pass database. Elapsed command time includes compilation; Cargo's build
+output separates preparation from test execution. Existing history, capacity and offline controller
+costs remain until their family cutovers. No latency target permits omitted work. Temporary CI phase
+aliases select from the same owner mapping; they do not maintain a second list. PR CI explicitly
+builds supported Git in its job-local setup before those phases. Release-artifact and coverage
+workflow retirement remains a separate cutover.
 
 ## Focused gates
 
@@ -79,7 +115,7 @@ Missing prerequisites mean missing evidence, not a passing substitute.
 | MCP bridge                     | `cargo test --locked -p kapsel-daemon --features test-harness --bin kapsel-service-mcp --test service_mcp` |
 | Fresh-session caller           | `python3 examples/test_fresh_session_caller.py`                                                            |
 | Formatting pipeline            | `python3 tools/dev/test_format.py`                                                                         |
-| Python tooling                 | `cargo xtask ci static`                                                                                    |
+| Python tooling                 | `cargo xtask check tools`                                                                                  |
 | Packaged Git controller        | `python3 tests/qualification/test_git_artifact.py`                                                         |
 | Packaged Kubernetes controller | `python3 tests/qualification/test_kind_agent_action_exercise.py`                                           |
 
@@ -130,7 +166,5 @@ git config --get core.hooksPath
 git config core.hooksPath .githooks
 ```
 
-Pre-commit checks staged whitespace only. Pre-push requires a clean checkout matching the pushed
-tree and runs the full local gate, reusing a passing result for the same tree. CI independently runs
-the gate. Neither hook starts Docker. See [the hooks](../../.githooks) for refusal and caching
-rules.
+Pre-commit checks staged whitespace only. Pre-push prints a non-executing reminder; it neither runs
+a gate nor stores tree results. CI owns merge enforcement. See [the hooks](../../.githooks).

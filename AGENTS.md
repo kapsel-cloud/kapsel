@@ -8,7 +8,10 @@ Kapsel is an open-source execution boundary for automated workflows and AI agent
 - [docs/index.md](docs/index.md): documentation map.
 - [CONTRIBUTING.md](CONTRIBUTING.md): engineering and public writing conventions.
 - [docs/contributing/build.md](docs/contributing/build.md): commands, prerequisites, and validation
-  gates.
+  gates. Use `cargo xtask check <area>` for an implementation change within one owner with unchanged
+  shared contracts. Use unscoped `cargo xtask check` for shared contracts, dependencies, gate
+  wiring, or uncertain scope. Add only qualification required by a changed physical premise. Once
+  that set passes on the finished inputs, stop; do not repeat included checks before push.
 - [docs/scope.md](docs/scope.md): current capability and release limits.
 - [docs/reference/effect_gateway.md](docs/reference/effect_gateway.md): authority, lifecycle,
   recovery, and evidence.

@@ -378,99 +378,161 @@ mod tests {
     }
 
     #[test]
-    fn receiver_classification_distinguishes_owned_terminal_facts() {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one finite partition owns the complete result contract"
+    )]
+    fn classification_partitions_require_correlation_generation_and_terminal_evidence() {
+        use OperationResult::{Failed, Succeeded, Unknown};
+
+        type TextField = fn(&mut ReceiverObservation) -> &mut Option<String>;
+        type CountField = fn(&mut ReceiverObservation) -> &mut Option<i32>;
+
         let request = request();
-        let outcome = apply_outcome();
-        let recovered_outcome = ApplyOutcome {
-            accepted: false,
-            requested_generation: None,
-            deployment_uid: Some("deployment-uid-1".into()),
-            resource_version: Some("resource-version-0".into()),
+        let validated = validated(&request);
+        let check = |o: &ReceiverObservation, outcome: &ApplyOutcome, expected| {
+            assert_eq!(
+                o.classify(&validated, outcome),
+                expected,
+                "{o:?}/{outcome:?}"
+            );
+            assert_eq!(
+                o.observation_is_complete(&request, outcome),
+                expected != Unknown
+            );
         };
-        let mut observation = unknown_observation(&request);
-        assert_eq!(
-            observation.classify(&validated(&request), &outcome),
-            OperationResult::Unknown
-        );
-        assert_eq!(
-            observation.requested_generation(&validated(&request), &recovered_outcome),
-            Some(2)
-        );
+        for failure in [false, true] {
+            for recovered in [false, true] {
+                let mut outcome = apply_outcome();
+                if recovered {
+                    outcome.accepted = false;
+                    outcome.requested_generation = None;
+                }
+                let mut terminal = unknown_observation(&request);
+                terminal.updated_replicas = Some(1);
+                terminal.available_replicas = Some(1);
+                terminal.unavailable_replicas = Some(0);
+                terminal.observed_generation = Some(9);
+                terminal.rollout_condition_type =
+                    Some(if failure { "Progressing" } else { "Available" }.into());
+                terminal.rollout_condition_status =
+                    Some(if failure { "False" } else { "True" }.into());
+                terminal.rollout_condition_reason =
+                    failure.then(|| "ProgressDeadlineExceeded".into());
+                let result = if failure { Failed } else { Succeeded };
+                check(&terminal, &outcome, result);
+                assert_eq!(terminal.requested_generation(&validated, &outcome), Some(2));
 
-        let mut mismatched_uid = observation.clone();
-        mismatched_uid.deployment_uid = Some("replacement-uid".into());
-        assert_eq!(
-            mismatched_uid.requested_generation(&validated(&request), &recovered_outcome),
-            None
-        );
+                // Missing and unequal values of each required identity cannot establish a result.
+                let identities: [TextField; 3] = [
+                    |o| &mut o.deployment_uid,
+                    |o| &mut o.operation_marker,
+                    |o| &mut o.image,
+                ];
+                for field in identities {
+                    for value in [None, Some("other".into())] {
+                        let mut o = terminal.clone();
+                        *field(&mut o) = value;
+                        check(&o, &outcome, Unknown);
+                        assert_eq!(
+                            o.requested_generation(&validated, &outcome),
+                            if recovered { None } else { Some(2) }
+                        );
+                    }
+                }
+                for uid in [None, Some("replacement".into())] {
+                    let mut response = outcome.clone();
+                    response.deployment_uid = uid;
+                    check(&terminal, &response, Unknown);
+                    assert_eq!(
+                        terminal.requested_generation(&validated, &response),
+                        if recovered { None } else { Some(2) }
+                    );
+                }
+                for (generation, expected) in [
+                    (None, Unknown),
+                    (Some(1), Unknown),
+                    (Some(2), result),
+                    (Some(9), result),
+                ] {
+                    let mut o = terminal.clone();
+                    o.observed_generation = generation;
+                    check(&o, &outcome, expected);
+                }
+                let mut missing = terminal.clone();
+                missing.current_generation = None;
+                check(&missing, &outcome, Unknown);
+                assert_eq!(
+                    missing.requested_generation(&validated, &outcome),
+                    if recovered { None } else { Some(2) }
+                );
+                let mut later = terminal.clone();
+                later.current_generation = Some(3);
+                check(&later, &outcome, if recovered { result } else { Unknown });
+                assert_eq!(
+                    later.requested_generation(&validated, &outcome),
+                    Some(if recovered { 3 } else { 2 })
+                );
+                for generation in [1, 3] {
+                    let mut response = outcome.clone();
+                    response.requested_generation = Some(generation);
+                    check(&terminal, &response, Unknown);
+                    assert_eq!(
+                        terminal.requested_generation(&validated, &response),
+                        Some(generation)
+                    );
+                }
 
-        let mut missing_stored_uid = recovered_outcome.clone();
-        missing_stored_uid.deployment_uid = None;
-        assert_eq!(
-            observation.requested_generation(&validated(&request), &missing_stored_uid),
-            None
-        );
-
-        observation.updated_replicas = Some(1);
-        observation.available_replicas = Some(1);
-        observation.unavailable_replicas = Some(0);
-        observation.rollout_condition_type = Some("Available".into());
-        observation.rollout_condition_status = Some("True".into());
-        observation.rollout_condition_reason = Some("DifferentObservedReason".into());
-        assert_eq!(
-            observation.classify(&validated(&request), &outcome),
-            OperationResult::Succeeded
-        );
-        assert_eq!(
-            observation.classify(&validated(&request), &recovered_outcome),
-            OperationResult::Succeeded
-        );
-
-        observation.rollout_condition_type = Some("Progressing".into());
-        observation.rollout_condition_status = Some("False".into());
-        observation.rollout_condition_reason = Some("ProgressDeadlineExceeded".into());
-        assert_eq!(
-            observation.classify(&validated(&request), &outcome),
-            OperationResult::Failed
-        );
-        assert_eq!(
-            observation.classify(&validated(&request), &recovered_outcome),
-            OperationResult::Failed
-        );
-    }
-
-    #[test]
-    fn replica_failure_alone_remains_unknown() {
-        let request = request();
-        let mut observation = unknown_observation(&request);
-        observation.rollout_condition_type = Some("ReplicaFailure".into());
-        observation.rollout_condition_status = Some("True".into());
-        observation.rollout_condition_reason = Some("FailedCreate".into());
-
-        assert_eq!(
-            observation.classify(&validated(&request), &apply_outcome()),
-            OperationResult::Unknown
-        );
-        assert!(!observation.observation_is_complete(&request, &apply_outcome()));
-    }
-
-    #[test]
-    fn a_terminal_signal_from_a_later_generation_is_not_complete() {
-        let request = request();
-        let outcome = apply_outcome();
-        let mut observation = unknown_observation(&request);
-        observation.current_generation = Some(3);
-        observation.observed_generation = Some(3);
-        observation.updated_replicas = Some(1);
-        observation.available_replicas = Some(1);
-        observation.unavailable_replicas = Some(0);
-        observation.rollout_condition_type = Some("Available".into());
-        observation.rollout_condition_status = Some("True".into());
-
-        assert_eq!(
-            observation.classify(&validated(&request), &outcome),
-            OperationResult::Unknown
-        );
-        assert!(!observation.observation_is_complete(&request, &outcome));
+                // Availability counts cannot establish failure or override a deadline failure.
+                let counts: [(CountField, i32); 4] = [
+                    (|o| &mut o.desired_replicas, 2),
+                    (|o| &mut o.updated_replicas, 0),
+                    (|o| &mut o.available_replicas, 0),
+                    (|o| &mut o.unavailable_replicas, 1),
+                ];
+                for (field, unequal) in counts {
+                    for value in [None, Some(unequal)] {
+                        let mut o = terminal.clone();
+                        *field(&mut o) = value;
+                        check(&o, &outcome, if failure { Failed } else { Unknown });
+                    }
+                }
+                let conditions: [(TextField, &str); 2] = [
+                    (|o| &mut o.rollout_condition_type, "ReplicaFailure"),
+                    (
+                        |o| &mut o.rollout_condition_status,
+                        if failure { "True" } else { "False" },
+                    ),
+                ];
+                for (field, unequal) in conditions {
+                    for value in [None, Some(unequal.into()), Some("Unknown".into())] {
+                        let mut o = terminal.clone();
+                        *field(&mut o) = value;
+                        check(&o, &outcome, Unknown);
+                    }
+                }
+                for reason in [None, Some("OtherReason".into())] {
+                    let mut o = terminal.clone();
+                    o.rollout_condition_reason = reason;
+                    check(&o, &outcome, if failure { Unknown } else { Succeeded });
+                }
+                let mut replica_failure = terminal.clone();
+                replica_failure.rollout_condition_type = Some("ReplicaFailure".into());
+                replica_failure.rollout_condition_status = Some("True".into());
+                replica_failure.rollout_condition_reason = Some("FailedCreate".into());
+                check(&replica_failure, &outcome, Unknown);
+                let mut zero = terminal.clone();
+                zero.desired_replicas = Some(0);
+                zero.updated_replicas = Some(0);
+                zero.available_replicas = Some(0);
+                check(&zero, &outcome, result);
+                let mut unrelated = terminal.clone();
+                unrelated.resource_version = Some("unrelated-version".into());
+                let mut response = outcome.clone();
+                response.accepted = false;
+                response.resource_version = None;
+                check(&unrelated, &response, result);
+            }
+        }
     }
 }

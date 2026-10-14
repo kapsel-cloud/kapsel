@@ -677,8 +677,6 @@ impl ServiceApplication {
                     ..OperationTargets::default()
                 },
             );
-            #[cfg(test)]
-            let projection = self.exploration_read_projection(projection);
             return Ok(projection);
         }
         let Some(retained) = self
@@ -695,29 +693,7 @@ impl ServiceApplication {
         )
         .map_err(|_| ServiceError::OperationFailure)?;
         let projection = (status, retained.operation.targets());
-        #[cfg(test)]
-        let projection = self.exploration_read_projection(projection);
         Ok(projection)
-    }
-
-    #[cfg(test)]
-    fn exploration_read_projection(
-        &self,
-        (mut status, mut targets): (OperationStatus, OperationTargets),
-    ) -> (OperationStatus, OperationTargets) {
-        if self.gateway.exercise_defect(Defect::StatusProjectionSwap) {
-            status = OperationStatus::NotFound;
-        }
-        if let Some(git) = &mut targets.git {
-            if self.gateway.exercise_defect(Defect::TargetProjectionSwap) {
-                git.approval.new_commit = "c".repeat(40);
-            }
-        } else if let Some(approved) = &mut targets.approved_target {
-            if self.gateway.exercise_defect(Defect::TargetProjectionSwap) {
-                approved.uid = "foreign-target".into();
-            }
-        }
-        (status, targets)
     }
 
     /// Projects execution guidance only after authenticating stored history.
@@ -735,16 +711,6 @@ impl ServiceApplication {
     ) -> Result<(OperationStatus, OperationTargets, ExecutionDisposition), ServiceError> {
         let (status, targets) = self.status(operation_id)?;
         let disposition = ExecutionDisposition::project(status, observation);
-        #[cfg(test)]
-        let disposition = if status == OperationStatus::InProgress
-            && self
-                .gateway
-                .exercise_defect(Defect::DispositionProjectionSwap)
-        {
-            ExecutionDisposition::Complete
-        } else {
-            disposition
-        };
         Ok((status, targets, disposition))
     }
 

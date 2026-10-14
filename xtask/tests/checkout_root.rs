@@ -73,6 +73,53 @@ fn compiled_binary_uses_invocation_checkout_root() -> Result<(), String> {
 }
 
 #[test]
+fn scopes_and_owner_arguments_reach_the_invocation_checkout() -> Result<(), String> {
+    let checkout = git_checkout("routing", "routing-marker")?;
+    for script in ["check.sh", "explore.sh", "qualify.sh"] {
+        fs::write(
+            checkout.path().join("scripts").join(script),
+            "#!/bin/sh\nprintf '%s\\n' \"$PWD\" \"$@\"\n",
+        )
+        .map_err(|error| format!("failed to write recording script: {error}"))?;
+    }
+    let binary = xtask_binary();
+    let canonical_root = fs::canonicalize(checkout.path())
+        .map_err(|error| format!("failed to canonicalize checkout: {error}"))?;
+    for area in ["authority", "core", "service", "tools", "release", "docs"] {
+        let output = run_xtask(&binary, checkout.path(), ["check", area])?;
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("{}\ncheck\n{area}\n", canonical_root.display())
+        );
+    }
+    for arguments in [
+        vec!["explore", "sim", "--output", "path with spaces"],
+        vec!["qualify", "git", "--archive", "selected A"],
+    ] {
+        let output = run_xtask(&binary, checkout.path(), &arguments)?;
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!(
+                "{}\n{}\n",
+                canonical_root.display(),
+                arguments[1..].join("\n")
+            )
+        );
+    }
+    fs::write(
+        checkout.path().join("scripts/check.sh"),
+        "#!/bin/sh\nexit 19\n",
+    )
+    .map_err(|error| format!("failed to write nonzero fixture: {error}"))?;
+    let failed = run_xtask(&binary, checkout.path(), ["check"])?;
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("failed"));
+    Ok(())
+}
+
+#[test]
 fn refuses_invalid_invocations_and_incomplete_checkouts() -> Result<(), String> {
     let outside = TempTree::new("outside")?;
     let checkout = git_checkout("reject", "reject-marker")?;
@@ -85,10 +132,12 @@ fn refuses_invalid_invocations_and_incomplete_checkouts() -> Result<(), String> 
     assert_eq!(outside_output.stdout, b"");
     assert!(String::from_utf8_lossy(&outside_output.stderr).contains("inside a Git checkout"));
 
-    let rejected_output = run_xtask(&binary, checkout.path(), ["fmt", "unexpected"])?;
-    assert!(!rejected_output.status.success());
-    assert_eq!(rejected_output.stdout, b"");
-    assert!(String::from_utf8_lossy(&rejected_output.stderr).contains("usage: cargo xtask"));
+    for arguments in [["fmt", "unexpected"], ["--help", "unexpected"]] {
+        let rejected_output = run_xtask(&binary, checkout.path(), arguments)?;
+        assert!(!rejected_output.status.success());
+        assert_eq!(rejected_output.stdout, b"");
+        assert!(String::from_utf8_lossy(&rejected_output.stderr).contains("usage: cargo xtask"));
+    }
 
     fs::remove_file(missing_manifest.path().join("xtask").join("Cargo.toml"))
         .map_err(|error| format!("failed to remove xtask manifest: {error}"))?;
@@ -137,7 +186,14 @@ fn create_minimal_checkout(root: &Path, marker: &str) -> Result<(), String> {
         "[package]\nname = 'xtask'\n",
     )
     .map_err(|error| format!("failed to write xtask manifest: {error}"))?;
-    for script in ["setup.sh", "fmt.sh", "ci.sh"] {
+    for script in [
+        "setup.sh",
+        "fmt.sh",
+        "ci.sh",
+        "check.sh",
+        "explore.sh",
+        "qualify.sh",
+    ] {
         fs::write(root.join("scripts").join(script), marker_script(marker))
             .map_err(|error| format!("failed to write {script}: {error}"))?;
     }
