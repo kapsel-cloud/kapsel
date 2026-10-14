@@ -89,13 +89,17 @@ Journal decoder checks use a concrete independently authored SQLite history buil
 request, authority, attempt, receiver and receipt fields do not come from production row writers.
 Unequal generation and replica values expose field swaps. Every corruption vector starts from a
 checked-valid row and exercises writable, retained-history and read-only publication readers.
-Kubernetes and Git retain their distinct typed-table checks. Shared SQL fixtures also supply format,
-capacity-layout, receipt-candidate and full-capacity records. Production writes own actual
-completion; independent row comparisons own unchanged authority, frozen facts and original bytes.
-One maximal mixed-phase completion witness replaces the insertion-order/phase lifecycle matrix. A
-two-row process fixture owns before-SQL, SQL-executed/precommit, hot rollback and committed-receipt
-observations. Competing-writer read views, rollback records and genuine ENOSPC remain separate
-physical owners.
+Kubernetes and Git retain their distinct typed-table checks. Writer properties generate bounded
+values within independently specified `SUCCEEDED`, `FAILED` and `UNKNOWN` recipes. They compare
+complete named SQL, reopened statements/targets and public projections. Single absent fields remain
+explicit, including the condition pair and optional reason. Git acknowledgement and current ref vary
+independently. A coordinated writer/reader replica swap must fail the SQL expectation even when the
+round trip matches. Shared SQL fixtures also supply format, capacity-layout, receipt-candidate and
+full-capacity records. Production writes own actual completion; independent row comparisons own
+unchanged authority, frozen facts and original bytes. One maximal mixed-phase completion witness
+replaces the insertion-order/phase lifecycle matrix. A two-row process fixture owns before-SQL,
+SQL-executed/precommit, hot rollback and committed-receipt observations. Competing-writer read
+views, rollback records and genuine ENOSPC remain separate physical owners.
 
 The local journal bridge checks 39 real SQLite deliveries: seven Kubernetes writes and six Git
 writes, each with Confirmed, NoCommit and LostAcknowledgement. Each case consumes its targeted
@@ -274,23 +278,24 @@ control. The shared stale-record control also runs against Git rows.
 Seeded remint, wrong-initial-result, no-op, wrong-signer, accepted catalog conflict and wrong-peer
 lookup controls must violate their intended temporal law and report the reached faulty branch.
 Stale-trust and ignored-custody controls establish original-key non-disclosure and post-I/O binding.
-The local record owner detects unconditional replacement. Local mapping properties detect replica
-and receipt-reader swaps; those controls cannot serialize as history inputs. Public status/target
-properties and the disposition partition replace the simulator's projection-swap controls and
-exclusive traces. Default temporal controls do not run shrink searches. A separate safety/progress
-reducer corpus checks peer/action reduction, serialization, reached defects and unchanged
-source/executable identities. The history bindings and direct disposition partition replace
-synthetic history-entry matrices and procedural application journeys. Local next-action/owner and
-error-to-stop classification checks remain. Compact application checks own missing-material
-admission, callback-time grant visibility and worker exclusion, full-page pagination, cold
-validation and SQLite file-byte preservation. Configured-client tests own actual
-success/ambiguous-response request counts and shared-target preflight conflict. These read laws do
-not establish physical job ownership, outcome-cache invalidation or socket rendering. Wrong-peer
-lookup deliberately misroutes the selected identity before grant binding; a wrong lower-layer row
-alone is refused by the existing identity guard. An unrelated bounded refusal does not qualify as
-detection. Generated schedules retain concrete actions, not just seeds. Older documents retain their
-original source/executable identities and replay their serialized actions without invoking the
-changed generator.
+The local record owner detects unconditional replacement from checked-valid complete rows on both
+stores. It also binds cross-table identity and exact/max+1 read limits. Local mapping controls
+detect replica/generation/null and coordinated writer/reader swaps. They have no temporal-fault enum
+or serialization registration. Public status/target properties and the disposition partition replace
+the simulator's projection-swap controls and exclusive traces. Default temporal controls do not run
+shrink searches. A separate safety/progress reducer corpus checks peer/action reduction,
+serialization, reached defects and unchanged source/executable identities. The history bindings and
+direct disposition partition replace synthetic history-entry matrices and procedural application
+journeys. Local next-action/owner and error-to-stop classification checks remain. Compact
+application checks own missing-material admission, callback-time grant visibility and worker
+exclusion, full-page pagination, cold validation and SQLite file-byte preservation.
+Configured-client tests own actual success/ambiguous-response request counts and shared-target
+preflight conflict. These read laws do not establish physical job ownership, outcome-cache
+invalidation or socket rendering. Wrong-peer lookup deliberately misroutes the selected identity
+before grant binding; a wrong lower-layer row alone is refused by the existing identity guard. An
+unrelated bounded refusal does not qualify as detection. Generated schedules retain concrete
+actions, not just seeds. Older documents retain their original source/executable identities and
+replay their serialized actions without invoking the changed generator.
 
 `AssertProgress` requires terminal evidence immediately after eligible explicit selection. Warm
 receiver, write and signer repairs must pass this assertion before the final reopen. Separate cold

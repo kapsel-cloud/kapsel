@@ -418,9 +418,6 @@ pub(super) fn defect_law(defect: Defect) -> &'static str {
         Defect::NoOp => "healthy_progress",
         Defect::UnconditionalWrite => "conditional_binding",
         Defect::GitObservationSubstitution => "frozen_io_binding",
-        Defect::ReplicaSwap | Defect::ReceiptProjectionSwap => {
-            unreachable!("local mapping controls are not serialized history inputs")
-        },
         Defect::ReceiptRewrite => "original_receipt_bytes",
         Defect::WrongSigner => "original_signer",
         Defect::WrongPeerRead => "original_intent",

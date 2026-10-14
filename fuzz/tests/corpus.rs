@@ -92,17 +92,46 @@ fn reviewed_regression_bytes_run_the_semantic_driver_and_check_expected_status()
             let path = entry.unwrap().path();
             let name = path.file_name().unwrap().to_str().unwrap();
             let expected = match (target, name) {
-                ("inspect_git_receipt", "signer-probe-collision") => InspectionStatus::Inspected,
+                ("inspect_git_receipt", "signer-probe-collision")
+                | ("inspect_receipt", "receiver-fields-not-request-fields") => {
+                    InspectionStatus::Inspected
+                },
                 _ => panic!("regression {target}/{name} needs a reviewed semantic expectation"),
             };
             let bytes = fs::read(&path).unwrap();
             run(target, &bytes);
             assert_eq!(receipt_status(target, &bytes), expected, "{target}/{name}");
+            if target == "inspect_receipt" && name == "receiver-fields-not-request-fields" {
+                let (receipt, trust) = receipt_documents(&bytes).unwrap();
+                let report = inspect_receipt(receipt, trust, 150, InspectionLimits::default());
+                let statement = report.statement().unwrap();
+                assert_eq!(statement.target_uid(), "approved-uid-31");
+                assert_eq!(statement.receiver_uid(), Some("observed-uid-71"));
+                assert_eq!(statement.operation_id(), "snapshot-op-23");
+                assert_eq!(
+                    statement.observed_operation_marker(),
+                    Some("observed-operation-73")
+                );
+                assert_eq!(
+                    statement.observed_image(),
+                    Some(concat!(
+                        "registry.example/other-worker@sha256:",
+                        "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+                    ))
+                );
+                assert_eq!(statement.result(), kapsel::OperationResult::Unknown);
+            }
             selected.push(format!("{target}/{name}"));
         }
     }
     selected.sort();
-    assert_eq!(selected, ["inspect_git_receipt/signer-probe-collision"]);
+    assert_eq!(
+        selected,
+        [
+            "inspect_git_receipt/signer-probe-collision",
+            "inspect_receipt/receiver-fields-not-request-fields",
+        ]
+    );
 }
 
 #[test]

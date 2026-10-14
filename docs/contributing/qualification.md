@@ -502,8 +502,10 @@ fixture seed `[7; 32]` externally. Drivers never open the supplied journal path 
 receivers. They inspect raw signatures and separately re-sign bounded mutated statements with the
 fixture key. Re-signing reaches semantic parser branches without authenticating hostile input for
 execution. `seed_corpus` regenerates maintained valid/invalid seeds only when invoked without
-`--check`. The deterministic gate checks their exact bytes and acceptance through production entry
-points.
+`--check`. The deterministic gate reads committed bytes and checks acceptance through production
+entry points. Reviewed findings live in `fuzz/regressions/<target>/` with explicit semantic
+expectations in `fuzz/tests/corpus.rs`, separately from discovery inputs. New unregistered findings
+and missing required findings fail replay.
 
 The job runner requires Python 3.11+ and a new absolute `--output` directory outside the checkout.
 Its parent must exist without symlink components. Each invocation creates private output and never
@@ -525,22 +527,23 @@ Select explicit seeds and a separate output for each target:
 jobs="$(mktemp -d)"
 for target in inspect_receipt inspect_git_receipt verify_kubernetes_grant verify_git_grant service_document; do
   cargo xtask explore fuzz --output "$jobs/$target" --fuzz-target "$target" \
-    --corpus "fuzz/corpus/$target" --seed 2118243591 --runs 10000 --timeout 3600
+    --corpus "fuzz/corpus/$target" --seed 2118243591 --runs 10100 --timeout 3600
 done
 ```
 
 `fuzz/smoke.sh` invokes the same `fuzz` job as a longer search. Increase `--runs` explicitly;
 `--timeout` bounds the whole invocation, including compilation. Completion requires the exact
-requested run count, not merely zero exit or elapsed time. Choose a count larger than the starting
-corpus so libFuzzer's initialization fits within it.
+requested run count, not merely zero exit or elapsed time. Instrumented smoke needs at least 10,000
+runs beyond the finite starting corpus size and observed progress beyond initialization. Increase
+the example's count if the input corpus grows above 100 files.
 
-Repeat `--corpus` to add reviewed, target-specific discoveries or a retained legacy corpus. Inputs
-are read-only: each job copies and hashes their exact bytes in `corpus-before/`. LibFuzzer writes
-only to `discoveries/TARGET/` and `artifacts/` in this job. Review and promote discoveries
-separately; never combine different targets' inputs. The runner retains the executed binary,
-compiler identity, crash inputs and corpus manifests even when execution fails. A runtime diagnostic
-without a retained crash input is incomplete evidence, not a finding. Build failures are always
-infrastructure failures.
+Repeat `--corpus` to include the target's named regression directory, reviewed target-specific
+discoveries or a retained legacy corpus. Inputs are read-only: each job copies and hashes their
+exact bytes in `corpus-before/`. LibFuzzer writes only to `discoveries/TARGET/` and `artifacts/` in
+this job. Review and promote discoveries separately; never combine different targets' inputs. The
+runner retains the executed binary, compiler identity, crash inputs and corpus manifests even when
+execution fails. A runtime diagnostic without a retained crash input is incomplete evidence, not a
+finding. Build failures are always infrastructure failures.
 
 Each target keeps its production length ceiling plus one sentinel byte and receipt split framing.
 LibFuzzer retains its ten-second input timeout and sampled 2-GiB RSS limit. These are not hard

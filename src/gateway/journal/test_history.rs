@@ -6,9 +6,13 @@ use ed25519_dalek::SigningKey;
 use rusqlite::{params, types::Value, Connection, OptionalExtension};
 use sha2::{Digest as _, Sha256};
 
-use super::{git::GitBinding, Journal};
+use super::{
+    git::{GitBinding, GitPhase, GitRejection},
+    Journal,
+};
 use crate::gateway::{
-    receipt::{sign_statement, ReceiptStatement},
+    git::{Acknowledgement, ObservedRef},
+    receipt::{git as evidence, sign_statement, ReceiptStatement},
     sign_authorization_grant, verify_authorization_grant, ApprovedTarget, AuthorizationTrust,
     AuthorizedRequest, ExactAuthorization, FrozenReceipt, OperationResult,
     SetDeploymentImageRequest, ValidatedRequest,
@@ -229,17 +233,105 @@ pub(in crate::gateway) fn trust() -> AuthorizationTrust {
 }
 
 pub(in crate::gateway) fn git_binding(id: &str) -> GitBinding {
-    let approval = kapsel_authority::GitRefAuthorization {
+    git_binding_with_authority(&kapsel_authority::GitRefAuthorization {
         authorization_id: "approval".into(),
         operation_id: id.into(),
         repository_id: "repository".into(),
         reference: kapsel_authority::APPROVED_GIT_REF.into(),
         old_commit: "a".repeat(40),
         new_commit: "b".repeat(40),
-    };
+    })
+}
+
+pub(in crate::gateway) fn git_binding_with_authority(
+    approval: &kapsel_authority::GitRefAuthorization,
+) -> GitBinding {
     let bytes =
-        kapsel_authority::sign_git_ref_grant(&approval, &[7; 32], "snapshot-signer").unwrap();
+        kapsel_authority::sign_git_ref_grant(approval, &[7; 32], "snapshot-signer").unwrap();
     GitBinding::verify(&bytes, &[trust()]).unwrap()
+}
+
+// Literal SQL supplies valid phases without using a production row writer or decoder.
+pub(in crate::gateway) fn insert_git_phase(
+    connection: &Connection,
+    binding: &GitBinding,
+    phase: &str,
+) -> GitPhase {
+    let a = binding.authorization();
+    let statement = evidence::GitStatement {
+        authorization: a.clone(),
+        authorization_signer: "snapshot-signer".into(),
+        authorization_digest: digest(binding.signed_grant()),
+        acknowledgement: Acknowledgement::Unknown,
+        observed: ObservedRef::Commit(a.new_commit.clone()),
+    };
+    connection
+        .execute(
+            "INSERT INTO git_ref_operations (operation_id, repository_id, ref_name, old_commit,
+         new_commit, authorization_id, authorization_signer_key_id, authorization_grant_digest,
+         signed_authorization_grant, state)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'snapshot-signer', ?7, ?8, ?9)",
+            params![
+                a.operation_id,
+                a.repository_id,
+                a.reference,
+                a.old_commit,
+                a.new_commit,
+                a.authorization_id,
+                digest(binding.signed_grant()),
+                binding.signed_grant(),
+                phase
+            ],
+        )
+        .unwrap();
+    match phase {
+        "authorized" => GitPhase::Authorized,
+        "not_attempted" => {
+            connection
+                .execute(
+                    "UPDATE git_ref_operations SET target_rejection = 'stale_ref'
+                 WHERE operation_id = ?1",
+                    [&a.operation_id],
+                )
+                .unwrap();
+            GitPhase::NotAttempted(GitRejection::StaleRef)
+        },
+        "apply_started" => GitPhase::Attempted(None),
+        "receiver_observed" | "finalized" => {
+            connection
+                .execute(
+                    "UPDATE git_ref_operations SET acknowledgement = 'unknown',
+                 observed_ref_kind = 'commit', observed_commit = ?1 WHERE operation_id = ?2",
+                    params![a.new_commit, a.operation_id],
+                )
+                .unwrap();
+            if phase == "receiver_observed" {
+                GitPhase::Observed {
+                    acknowledgement: Acknowledgement::Unknown,
+                    observed: ObservedRef::Commit(a.new_commit.clone()),
+                }
+            } else {
+                let bytes = evidence::sign(&statement, &[9; 32], "bridge-receipt-key").unwrap();
+                connection
+                    .execute(
+                        "UPDATE git_ref_operations SET receipt_bytes = ?1, receipt_digest = ?2,
+                     receipt_key_id = 'bridge-receipt-key' WHERE operation_id = ?3",
+                        params![bytes, digest(&bytes), a.operation_id],
+                    )
+                    .unwrap();
+                GitPhase::Finalized {
+                    statement: Box::new(statement),
+                    receipt: FrozenReceipt {
+                        operation_id: a.operation_id.clone(),
+                        digest: digest(&bytes),
+                        bytes,
+                        key_id: "bridge-receipt-key".into(),
+                    },
+                }
+            }
+        },
+        _ => unreachable!("authored phases are fixed test inputs"),
+    }
 }
 
 // Complete named SQL projection, independent of production column ordering and record mapping.

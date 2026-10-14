@@ -25,12 +25,12 @@ and prerequisites. Contracts define behaviour. This map connects that behaviour 
 A SQL test alone cannot establish that a caller can retrieve the right receipt after restart.
 Receipt checks therefore cross completion, application reads, service retrieval and caller export.
 
-| Guarantee                                                          | Maintained check                                                                                 | Evidence limit                                                 |
-| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------- |
-| Signing failure leaves frozen observations unchanged               | [Atomic-record simulator](../../src/kernel_simulation_tests/mod.rs)                              | Fixture signing, not key-management qualification              |
-| Completion rejects another statement for the same ID               | `receipt_commit_rejects_wrong_facts_and_foreign_snapshot_without_changing_history` in that suite | Checks the current row, not only the builder's call convention |
-| Lost commit acknowledgement resolves to original bytes             | Atomic receipt-delivery laws; process-exit and snapshot suites                                   | Process exit is not power loss                                 |
-| Retrieval survives changed signing settings and unavailable export | [Linux process lane](qualification.md#kapsel-service-candidate)                                  | Source harness, not installed production bytes                 |
+| Guarantee                                                          | Maintained check                                                                                                       | Evidence limit                                                 |
+| ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| Signing failure leaves frozen observations unchanged               | [Atomic-record simulator](../../src/kernel_simulation_tests/mod.rs)                                                    | Fixture signing, not key-management qualification              |
+| Completion rejects another statement for the same ID               | Journal `receipt_commit_binds_candidate_and_expected_snapshot_without_changing_other_facts`; Git local receipt binding | Checks the current row, not only the builder's call convention |
+| Lost commit acknowledgement resolves to original bytes             | Atomic receipt-delivery laws; process-exit and snapshot suites                                                         | Process exit is not power loss                                 |
+| Retrieval survives changed signing settings and unavailable export | [Linux process lane](qualification.md#kapsel-service-candidate)                                                        | Source harness, not installed production bytes                 |
 
 A valid signature is not enough for receipt completion: the statement must match the current row's
 frozen facts. Both effects check that match under the write transaction. The wrong-facts regression
@@ -105,19 +105,26 @@ can describe an intervening writer or recreated Deployment.
 Use the [gateway contract](../reference/effect_gateway.md) for the definitions in this table. Names
 below identify suites, not separate release gates.
 
-| Boundary                         | Maintained checks                                                                                                             | Obligation                                                                                                                               |
-| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| Request and authority            | `kapsel-authority::grammar_tests`; gateway `validation`                                                                       | Bounds and exact signed authority; reject before persistence                                                                             |
-| Journal transitions and dispatch | [Atomic-record simulator](../../src/kernel_simulation_tests/mod.rs); compact admission, snapshot and physical dispatch checks | Enumerate fresh durable windows and recovery interactions; permission only from a confirmed fresh attempt commit                         |
-| Target disposition               | Snapshot/target-read tests; adapter/classifier tables                                                                         | Permanent rejection is `NOT_ATTEMPTED`; transient reads remain authorized without PATCH                                                  |
-| Observation and classification   | `gateway::kubernetes`; receiver-recovery matrix                                                                               | Acceptance, timeout, transport and rollout facts stay distinct; unresolved evidence is `UNKNOWN`                                         |
-| Receipt and inspection           | Kubernetes/Git receipt suites; authority vectors                                                                              | Freeze before signing; commit exact bytes/digest/signer with terminal state; inspect under explicit trust                                |
-| Export                           | Fixed-client and command-interface tests                                                                                      | Exclusive copy of committed bytes; export failure cannot reopen completion                                                               |
-| Original authority after I/O     | [Atomic-record simulator](../../src/kernel_simulation_tests/mod.rs)                                                           | Suspended preflight, mutation and observation reject changed grant bytes before advancing; both stores and effects                       |
-| Stored read projections          | Atomic-record simulator                                                                                                       | Exact status, admitted phase, original targets and receipt bytes/readiness; ordered history entries on SQLite; no writes or receiver I/O |
-| Original-key disclosure          | Atomic-record simulator                                                                                                       | Substituted public keys cannot disclose retained targets or receipts; unaffected peers remain readable; history pages use real SQLite    |
-| Journal format                   | [Version rejection](qualification.md#journal-version-rejection)                                                               | Older journals remain untouched, without migration                                                                                       |
-| Disclosure and hostile input     | [Defensive checks](#defensive-boundary-checks)                                                                                | Reject malformed records; keep secrets and unbounded bodies out of retained/output data                                                  |
+| Boundary                         | Maintained checks                                                                                                             | Obligation                                                                                                                            |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Request and authority            | `kapsel-authority::grammar_tests`; gateway `validation`                                                                       | Bounds and exact signed authority; reject before persistence                                                                          |
+| Journal transitions and dispatch | [Atomic-record simulator](../../src/kernel_simulation_tests/mod.rs); compact admission, snapshot and physical dispatch checks | Enumerate fresh durable windows and recovery interactions; permission only from a confirmed fresh attempt commit                      |
+| Target disposition               | Snapshot/target-read tests; adapter/classifier tables                                                                         | Permanent rejection is `NOT_ATTEMPTED`; transient reads remain authorized without PATCH                                               |
+| Observation and classification   | `gateway::kubernetes`; receiver-recovery matrix                                                                               | Acceptance, timeout, transport and rollout facts stay distinct; unresolved evidence is `UNKNOWN`                                      |
+| Receipt and inspection           | Kubernetes/Git receipt suites; authority vectors                                                                              | Freeze before signing; commit exact bytes/digest/signer with terminal state; inspect under explicit trust                             |
+| Export                           | Fixed-client and command-interface tests                                                                                      | Exclusive copy of committed bytes; export failure cannot reopen completion                                                            |
+| Original authority after I/O     | [Atomic-record simulator](../../src/kernel_simulation_tests/mod.rs)                                                           | Suspended preflight, mutation and observation reject changed grant bytes before advancing; both stores and effects                    |
+| Stored read projections          | Journal local mapping/public-read properties; `service_application_contract` pagination                                       | Complete named SQL, reopened statement/targets/status/receipt; mixed-effect binary ordering and inaccessible IDs                      |
+| Original-key disclosure          | Atomic-record simulator                                                                                                       | Substituted public keys cannot disclose retained targets or receipts; unaffected peers remain readable; history pages use real SQLite |
+| Journal format                   | [Version rejection](qualification.md#journal-version-rejection)                                                               | Older journals remain untouched, without migration                                                                                    |
+| Disclosure and hostile input     | [Defensive checks](#defensive-boundary-checks)                                                                                | Reject malformed records; keep secrets and unbounded bodies out of retained/output data                                               |
+
+The journal's local SQLite bridge consumes 39 write deliveries and compares complete prior, next and
+untouched peer rows. Its SQL capture supplies the pinned EXPLAIN premises, including nullable
+observation layouts. Local calibration detects replica, generation and null mistakes. Coordinated
+writer/reader swaps preserve the round trip but fail independent named SQL expectations. Git mapping
+varies acknowledgements independently of old, new, foreign, missing and unknown refs. Finalization
+changes only terminal and receipt fields. Public reads preserve those facts after reopening.
 
 The same simulator owns fresh interruption enumeration, deliberate joins and suspended service
 contention. Its [window mapping](testing.md#consolidated-crash-matrix-obligations) connects safe
@@ -257,10 +264,12 @@ receiver outcome.
 ### Robustness
 
 Five fuzz targets call production Kubernetes/Git receipt inspection, Kubernetes/Git grant
-verification and service-document parsing. The deterministic corpus checks valid and invalid seed
-acceptance independently of coverage discovery: legacy/snapshot purposes, inconsistent signed
-results, record shape, UTF-8, lengths, limits and array counts. Exact vectors and unique composition
-checks remain required.
+verification and service-document parsing. The deterministic corpus reads committed bytes and checks
+valid and invalid acceptance independently of coverage discovery: legacy/snapshot purposes,
+inconsistent signed results, record shape, UTF-8, lengths, limits and array counts. Named
+regressions have explicit semantic expectations; missing or unregistered files fail replay. The
+receiver-field regression distinguishes observed UID, image and marker from request/approval facts.
+Exact vectors and unique composition checks remain required.
 
 Targets use explicit trust, evaluation time and limits without discovering credentials or doing
 filesystem/network/receiver I/O. The service path is inert. Checks include trailing rejection,

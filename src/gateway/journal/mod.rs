@@ -27,7 +27,14 @@ pub(crate) async fn executed_write_statements() -> Vec<(StorageWrite, String)> {
     ] {
         statements.extend(tests::kube_sqlite_bridge(write, Delivery::Confirmed));
     }
-    statements.extend(tests::observation_mapping(0, false, false, None));
+    statements.extend(tests::observation_mapping(
+        0,
+        false,
+        false,
+        OperationResult::Unknown,
+        None,
+        None,
+    ));
     statements.extend(git::executed_write_statements().await);
     statements.sort_by(|left, right| left.1.cmp(&right.1));
     statements.dedup_by(|left, right| left.1 == right.1);
@@ -40,6 +47,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+#[cfg(test)]
+use records::MappingDefect;
 use records::Record;
 pub(crate) use records::Write as StorageWrite;
 #[cfg(test)]
@@ -1271,10 +1280,24 @@ impl Journal {
         );
         let available_replicas = observation.available_replicas;
         #[cfg(test)]
-        let available_replicas = if self.exercise_defect(Defect::ReplicaSwap) {
-            observation.updated_replicas
-        } else {
-            available_replicas
+        let available_replicas = match self.records.control.mapping_defect() {
+            Some(MappingDefect::WriterReplicaSwap | MappingDefect::WriterReaderReplicaSwap) => {
+                observation.updated_replicas
+            },
+            Some(MappingDefect::NullableDrop) => None,
+            _ => available_replicas,
+        };
+        #[cfg(test)]
+        if self.records.control.mapping_defect() == Some(MappingDefect::WriterReaderReplicaSwap) {
+            next.set_optional(
+                "updated_replicas",
+                observation.available_replicas.map(i64::from),
+            );
+        }
+        #[cfg(test)]
+        if self.records.control.mapping_defect() == Some(MappingDefect::GenerationSwap) {
+            next.set_optional("current_generation", observation.observed_generation);
+            next.set_optional("observed_generation", observation.current_generation);
         };
         next.set_optional("available_replicas", available_replicas.map(i64::from));
         next.set_optional(
@@ -1875,15 +1898,16 @@ mod tests {
             Some(history.statement.clone())
         );
         let control = StorageControl::default();
-        control.seed(Defect::ReceiptProjectionSwap);
+        control.seed_mapping(MappingDefect::ReaderReplicaSwap);
         journal.control_storage(control.clone());
         assert_ne!(
             journal.receipt_statement("projection-control").unwrap(),
             Some(history.statement)
         );
-        assert!(control
-            .defect_reached()
-            .contains(&Defect::ReceiptProjectionSwap));
+        assert_eq!(
+            control.mapping_defect(),
+            Some(MappingDefect::ReaderReplicaSwap)
+        );
     }
 
     #[test]
@@ -2169,6 +2193,7 @@ mod tests {
 
     #[test]
     fn kubernetes_sqlite_bridge_consumes_all_seven_writes_under_three_deliveries() {
+        let mut consumed = 0;
         for write in [
             StorageWrite::Admission,
             StorageWrite::Authorization,
@@ -2184,8 +2209,11 @@ mod tests {
                 Delivery::LostAcknowledgement,
             ] {
                 kube_sqlite_bridge(write, delivery);
+                consumed += 1;
             }
         }
+        assert_eq!(consumed, 21);
+        eprintln!("KAPSEL_SQLITE_DELIVERIES Kubernetes consumed={consumed}");
     }
 
     #[allow(
@@ -2196,7 +2224,7 @@ mod tests {
         write: StorageWrite,
         delivery: Delivery,
     ) -> Vec<(StorageWrite, String)> {
-        use test_history::named_kube_row;
+        use test_history::{git_binding, insert_git_phase, named_git_row, named_kube_row};
 
         use crate::gateway::{Gateway, ReceiptSettings};
 
@@ -2227,6 +2255,10 @@ mod tests {
         let peer = History::kube("untouched-peer");
         peer.insert(&journal.connection, "finalized");
         let peer_before = named_kube_row(&journal.connection, "untouched-peer");
+        let git_peer = git_binding("untouched-git-peer");
+        let git_phase = insert_git_phase(&journal.connection, &git_peer, "finalized");
+        assert_eq!(journal.git_operation(&git_peer).unwrap(), Some(git_phase));
+        let git_peer_before = named_git_row(&journal.connection, "untouched-git-peer");
         let before = named_kube_row(&journal.connection, "sqlite-bridge");
         assert_eq!(
             before,
@@ -2362,46 +2394,115 @@ mod tests {
             named_kube_row(&reopened.connection, "untouched-peer"),
             peer_before
         );
+        assert_eq!(
+            named_git_row(&reopened.connection, "untouched-git-peer"),
+            git_peer_before
+        );
         sql
     }
 
     #[test]
     fn observation_writers_bind_named_sql_and_reopened_statements_to_independent_inputs() {
-        for variant in 0..4 {
-            for present in [false, true] {
-                for response in [false, true] {
-                    observation_mapping(variant, present, response, None);
+        for variant in [0, 1, 17, 127] {
+            for response in [false, true] {
+                observation_mapping(
+                    variant,
+                    false,
+                    response,
+                    OperationResult::Unknown,
+                    None,
+                    None,
+                );
+                for result in [
+                    OperationResult::Unknown,
+                    OperationResult::Succeeded,
+                    OperationResult::Failed,
+                ] {
+                    observation_mapping(variant, true, response, result, None, None);
                 }
             }
         }
-        for defect in [Defect::ReplicaSwap, Defect::ReceiptProjectionSwap] {
-            observation_mapping(3, true, true, Some(defect));
+        // Condition type/status form a required pair; reason alone may be absent.
+        for absent in [
+            "uid",
+            "image",
+            "marker",
+            "current",
+            "observed",
+            "version",
+            "desired",
+            "updated",
+            "available",
+            "unavailable",
+            "condition",
+            "reason",
+        ] {
+            observation_mapping(17, true, true, OperationResult::Unknown, Some(absent), None);
+        }
+        for defect in [
+            MappingDefect::WriterReplicaSwap,
+            MappingDefect::ReaderReplicaSwap,
+            MappingDefect::WriterReaderReplicaSwap,
+            MappingDefect::GenerationSwap,
+            MappingDefect::NullableDrop,
+        ] {
+            observation_mapping(17, true, true, OperationResult::Unknown, None, Some(defect));
         }
     }
 
     #[allow(
         clippy::too_many_lines,
-        reason = "independent SQL expectations and writer inputs stay in one mapping witness"
+        reason = "independent recipes bind named SQL, complete reopened facts and public reads"
     )]
     pub(super) fn observation_mapping(
         variant: i32,
         present: bool,
         response: bool,
-        defect: Option<Defect>,
+        result: OperationResult,
+        absent: Option<&str>,
+        defect: Option<MappingDefect>,
     ) -> Vec<(StorageWrite, String)> {
         use test_history::named_kube_row;
+
+        use crate::application::{
+            ExecutionDisposition, ExecutionObservation, OperationReceipt, OperationStatus,
+            ServiceApplication, ServiceConfiguration,
+        };
 
         let scratch = Scratch::new();
         let expected_scratch = Scratch::new();
         let mut journal = open_scratch(&scratch);
         let expected_journal = open_scratch(&expected_scratch);
-        let mut history = History::kube("mapped-operation");
+        let target_uid = format!("attempt-uid-{variant}");
+        let target_version = format!("attempt:version-{variant}");
+        let approved = ApprovedTarget {
+            uid: target_uid.clone(),
+            resource_version: target_version.clone(),
+        };
+        let request = SetDeploymentImageRequest {
+            operation_id: format!("mapped-operation-{variant}"),
+            namespace: format!("namespace-{variant}"),
+            deployment: format!("deployment-{variant}"),
+            container: format!("container-{variant}"),
+            immutable_image_digest: format!("registry.example/request@sha256:{variant:064x}"),
+        };
+        let mut history = History::with_authority(
+            request,
+            Some(approved.clone()),
+            &format!("approval-{variant}"),
+            "snapshot-signer",
+        );
+        let id = history.request.operation_id.clone();
+        history.statement.target_uid.clone_from(&target_uid);
+        history
+            .statement
+            .target_resource_version
+            .clone_from(&target_version);
         let peer = History::kube("untouched-peer");
         peer.insert(&journal.connection, "finalized");
         let peer_before = named_kube_row(&journal.connection, "untouched-peer");
         history.insert(&journal.connection, "apply_started");
-        let LoadedOperation::ApplyStarted(operation) =
-            journal.operation("mapped-operation").unwrap().unwrap()
+        let LoadedOperation::ApplyStarted(operation) = journal.operation(&id).unwrap().unwrap()
         else {
             unreachable!()
         };
@@ -2413,15 +2514,15 @@ mod tests {
                     &ApplyOutcome {
                         accepted: true,
                         requested_generation: requested,
-                        deployment_uid: Some("target-uid".into()),
+                        deployment_uid: Some(target_uid.clone()),
                         resource_version: Some(format!("apply-version-{variant}")),
                     },
                 )
                 .unwrap();
         }
-        // A foreign receiver UID/image/marker is an independently known UNKNOWN recipe.
-        // Every numeric field remains distinct, and absent fields are explicit inputs.
-        let observation = ReceiverObservation {
+        // Foreign receiver facts establish UNKNOWN independently of numeric values. The
+        // conclusive recipes explicitly supply correlated identity, generation and conditions.
+        let mut observation = ReceiverObservation {
             deployment_uid: present.then(|| format!("receiver-uid-{variant}")),
             image: present.then(|| format!("registry.example/receiver@sha256:{}", "1".repeat(64))),
             operation_marker: present.then(|| format!("receiver-marker-{variant}")),
@@ -2436,12 +2537,51 @@ mod tests {
             rollout_condition_status: present.then(|| "False".into()),
             rollout_condition_reason: present.then(|| "ProgressDeadlineExceeded".into()),
         };
+        if result != OperationResult::Unknown {
+            observation.deployment_uid = Some(target_uid.clone());
+            observation.image = Some(history.request.immutable_image_digest.clone());
+            observation.operation_marker = Some(id.clone());
+            observation.current_generation = Some(i64::from(11 + variant));
+            observation.observed_generation = Some(i64::from(19 + variant));
+            if result == OperationResult::Succeeded {
+                observation.updated_replicas = observation.desired_replicas;
+                observation.available_replicas = observation.desired_replicas;
+                observation.unavailable_replicas = Some(0);
+                observation.rollout_condition_type = Some("Available".into());
+                observation.rollout_condition_status = Some("True".into());
+                observation.rollout_condition_reason = Some("MinimumReplicasAvailable".into());
+            }
+        }
+        match absent {
+            None => {},
+            Some("uid") => observation.deployment_uid = None,
+            Some("image") => observation.image = None,
+            Some("marker") => observation.operation_marker = None,
+            Some("current") => observation.current_generation = None,
+            Some("observed") => observation.observed_generation = None,
+            Some("version") => observation.resource_version = None,
+            Some("desired") => observation.desired_replicas = None,
+            Some("updated") => observation.updated_replicas = None,
+            Some("available") => observation.available_replicas = None,
+            Some("unavailable") => observation.unavailable_replicas = None,
+            Some("condition") => {
+                observation.rollout_condition_type = None;
+                observation.rollout_condition_status = None;
+                observation.rollout_condition_reason = None;
+            },
+            Some("reason") => observation.rollout_condition_reason = None,
+            Some(_) => unreachable!("fixed optional-field catalogue"),
+        }
         let s = &mut history.statement;
         s.receiver_uid = observation.deployment_uid.clone();
         s.observed_image = observation.image.clone();
         s.observed_operation_marker = observation.operation_marker.clone();
         s.current_generation = observation.current_generation;
-        s.requested_generation = requested;
+        s.requested_generation = if result == OperationResult::Unknown {
+            requested
+        } else {
+            Some(i64::from(11 + variant))
+        };
         s.observed_generation = observation.observed_generation;
         s.observed_resource_version = observation.resource_version.clone();
         s.desired_replicas = observation.desired_replicas;
@@ -2451,44 +2591,49 @@ mod tests {
         s.rollout_condition_type = observation.rollout_condition_type.clone();
         s.rollout_condition_status = observation.rollout_condition_status.clone();
         s.rollout_condition_reason = observation.rollout_condition_reason.clone();
-        s.result = OperationResult::Unknown;
+        s.result = result;
         history.insert(&expected_journal.connection, "receiver_observed");
         if response {
             expected_journal
                 .connection
                 .execute(
                     "UPDATE kubernetes_image_operations SET apply_accepted = 1,
-                 apply_resource_version = ?1 WHERE operation_id = 'mapped-operation'",
-                    [format!("apply-version-{variant}")],
+                 apply_resource_version = ?1 WHERE operation_id = ?2",
+                    [format!("apply-version-{variant}"), id.clone()],
                 )
                 .unwrap();
         }
         assert_eq!(
-            expected_journal
-                .receipt_statement("mapped-operation")
-                .unwrap(),
+            expected_journal.receipt_statement(&id).unwrap(),
             Some(history.statement.clone()),
             "independently authored expected row is valid"
         );
-        let LoadedOperation::ApplyStarted(operation) =
-            journal.operation("mapped-operation").unwrap().unwrap()
+        let LoadedOperation::ApplyStarted(operation) = journal.operation(&id).unwrap().unwrap()
         else {
             unreachable!()
         };
         let control = StorageControl::default();
         if let Some(defect) = defect {
-            control.seed(defect);
+            control.seed_mapping(defect);
         }
         journal.control_storage(control.clone());
         journal
             .freeze_observation(&operation, &observation)
             .unwrap();
-        let actual = named_kube_row(&journal.connection, "mapped-operation");
-        let expected = named_kube_row(&expected_journal.connection, "mapped-operation");
-        let mapped = journal.receipt_statement("mapped-operation").unwrap();
+        let actual = named_kube_row(&journal.connection, &id);
+        let expected = named_kube_row(&expected_journal.connection, &id);
+        let mapped = journal.receipt_statement(&id).unwrap();
         if let Some(defect) = defect {
             assert!(actual != expected || mapped != Some(history.statement.clone()));
-            assert!(control.defect_reached().contains(&defect));
+            assert_eq!(control.mapping_defect(), Some(defect));
+            if defect == MappingDefect::WriterReaderReplicaSwap {
+                assert_eq!(
+                    mapped,
+                    Some(history.statement.clone()),
+                    "round trip hides the swap"
+                );
+                assert_ne!(actual, expected, "named SQL detects coordinated swaps");
+            }
         } else {
             assert_eq!(actual, expected, "complete named row");
             assert_eq!(
@@ -2496,42 +2641,72 @@ mod tests {
                 Some(history.statement.clone()),
                 "complete statement"
             );
-            let loaded = journal.operation("mapped-operation").unwrap().unwrap();
+            let loaded = journal.operation(&id).unwrap().unwrap();
             assert_eq!(loaded.state(), OperationState::ReceiverObserved);
-            assert_eq!(loaded.result(), Some(OperationResult::Unknown));
+            assert_eq!(loaded.result(), Some(result));
             assert_eq!(
                 loaded.request_facts().request.to_adapter_request(),
                 history.request
             );
             let expected_targets = OperationTargets {
-                approved_target: None,
+                approved_target: Some(approved.clone()),
                 observed_target: Some(ObservedTarget {
                     uid: observation.deployment_uid.clone(),
                     resource_version: observation.resource_version,
                 }),
-                attempt_target: Some(ApprovedTarget {
-                    uid: "target-uid".into(),
-                    resource_version: "target-rv".into(),
-                }),
+                attempt_target: Some(approved),
                 git: None,
             };
             assert_eq!(loaded.targets(), expected_targets);
             drop(journal);
             let reopened = open_scratch(&scratch);
             assert_eq!(
-                reopened.receipt_statement("mapped-operation").unwrap(),
+                reopened.receipt_statement(&id).unwrap(),
                 Some(history.statement),
                 "reopened complete statement"
             );
             assert_eq!(
-                reopened
-                    .operation("mapped-operation")
-                    .unwrap()
-                    .unwrap()
-                    .targets(),
+                reopened.operation(&id).unwrap().unwrap().targets(),
                 expected_targets,
                 "reopened target projection"
             );
+            drop(reopened);
+            let app = ServiceApplication::open_simulated(
+                ServiceConfiguration {
+                    journal_path: scratch.0.join("journal.sqlite3"),
+                    authorization_trust: vec![test_history::trust()],
+                    approvals: vec![],
+                },
+                control.clone(),
+            )
+            .unwrap();
+            let reads_before = control.events();
+            assert_eq!(
+                app.status(&id).unwrap(),
+                (OperationStatus::InProgress, expected_targets.clone())
+            );
+            assert_eq!(
+                app.execution_status(&id, ExecutionObservation::Unknown)
+                    .unwrap(),
+                (
+                    OperationStatus::InProgress,
+                    expected_targets,
+                    ExecutionDisposition::ResumeRequired(None),
+                )
+            );
+            assert_eq!(
+                app.admitted_state(&id).unwrap(),
+                Some(OperationState::ReceiverObserved)
+            );
+            assert_eq!(app.receipt(&id).unwrap(), OperationReceipt::NotReady);
+            assert_eq!(
+                control.events(),
+                reads_before,
+                "public reads perform no writes"
+            );
+            drop(app);
+            let reopened = open_scratch(&scratch);
+            assert_eq!(named_kube_row(&reopened.connection, &id), expected);
             assert_eq!(
                 named_kube_row(&reopened.connection, "untouched-peer"),
                 peer_before

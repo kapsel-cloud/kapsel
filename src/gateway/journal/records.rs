@@ -184,11 +184,22 @@ pub(super) fn decode(
     let statement = if matches!(snapshot.state.as_str(), "receiver_observed" | "finalized") {
         let available_field = "available_replicas";
         #[cfg(test)]
-        let available_field = if control.exercise(Defect::ReceiptProjectionSwap) {
+        let available_field = if matches!(
+            control.mapping_defect(),
+            Some(MappingDefect::ReaderReplicaSwap | MappingDefect::WriterReaderReplicaSwap)
+        ) {
             "updated_replicas"
         } else {
             available_field
         };
+        let updated_field = "updated_replicas";
+        #[cfg(test)]
+        let updated_field =
+            if control.mapping_defect() == Some(MappingDefect::WriterReaderReplicaSwap) {
+                "available_replicas"
+            } else {
+                updated_field
+            };
         Some(
             super::ReceiptRow {
                 approved_uid: record.get("approved_uid")?,
@@ -212,7 +223,7 @@ pub(super) fn decode(
                 observed_generation: record.get("observed_generation")?,
                 observed_resource_version: record.get("receiver_resource_version")?,
                 desired_replicas: record.get("desired_replicas")?,
-                updated_replicas: record.get("updated_replicas")?,
+                updated_replicas: record.get(updated_field)?,
                 available_replicas: record.get(available_field)?,
                 unavailable_replicas: record.get("unavailable_replicas")?,
                 rollout_condition_type: record.get("rollout_condition_type")?,
@@ -613,6 +624,7 @@ struct Controls {
     consumed_cuts: usize,
     defect: Option<Defect>,
     defect_reached: Vec<Defect>,
+    mapping_defect: Option<MappingDefect>,
     sql: Vec<(Write, String)>,
     original_trust: Option<Vec<AuthorizationTrust>>,
 }
@@ -670,12 +682,8 @@ pub(crate) enum Defect {
     InitialUnknown,
     NoOp,
     UnconditionalWrite,
-    #[serde(skip)]
-    ReplicaSwap,
     WrongSigner,
     WrongPeerRead,
-    #[serde(skip)]
-    ReceiptProjectionSwap,
     GitInferredAcknowledgement,
     GitObservationSubstitution,
     ReceiptRewrite,
@@ -684,8 +692,27 @@ pub(crate) enum Defect {
     CustodyIgnored,
 }
 
+// Local mapping calibration is deliberately outside serialized temporal faults.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum MappingDefect {
+    WriterReplicaSwap,
+    ReaderReplicaSwap,
+    WriterReaderReplicaSwap,
+    GenerationSwap,
+    NullableDrop,
+}
+
 #[cfg(test)]
 impl Control {
+    pub(super) fn seed_mapping(&self, defect: MappingDefect) {
+        self.0.lock().unwrap().mapping_defect = Some(defect);
+    }
+
+    pub(super) fn mapping_defect(&self) -> Option<MappingDefect> {
+        self.0.lock().unwrap().mapping_defect
+    }
+
     pub(crate) fn appointed_trust(
         &self,
         current: Vec<AuthorizationTrust>,
@@ -821,18 +848,22 @@ mod tests {
             Control::default()
         };
         journal.control_storage(control.clone());
+        let binding = crate::gateway::journal::test_history::git_binding("atomic-binding");
+        let fixture_scratch = Scratch::new();
         let original = if git {
-            let mut record = Record::git_empty("atomic-binding");
-            for (field, value) in [
-                ("repository_id", "repository"),
-                ("ref_name", "refs/heads/approved"),
-                ("old_commit", "a"),
-                ("new_commit", "b"),
-                ("state", "authorized"),
-            ] {
-                record.set(field, value.to_owned());
-            }
-            record
+            let fixture = open_scratch(&fixture_scratch);
+            crate::gateway::journal::test_history::insert_git_phase(
+                &fixture.connection,
+                &binding,
+                "apply_started",
+            );
+            assert_eq!(
+                fixture.git_operation(&binding).unwrap(),
+                Some(crate::gateway::journal::git::GitPhase::Attempted(None))
+            );
+            read_git(&fixture.connection, "atomic-binding")
+                .unwrap()
+                .unwrap()
         } else {
             record()
         };
@@ -840,11 +871,17 @@ mod tests {
             .records
             .replace(&journal.connection, None, &original, Write::Admission)
             .unwrap();
+        if git {
+            assert!(journal.git_operation(&binding).unwrap().is_some());
+        } else {
+            assert!(journal.operation("atomic-binding").unwrap().is_some());
+        }
         let mut foreign = original.clone();
-        foreign.set(
-            if git { "new_commit" } else { "container" },
-            "different".to_owned(),
-        );
+        if git {
+            foreign.set("acknowledgement", "receiver_rejected".to_owned());
+        } else {
+            foreign.set("target_read_failures", 17_i64);
+        }
         journal
             .records
             .replace(
@@ -854,11 +891,20 @@ mod tests {
                 Write::Authorization,
             )
             .unwrap();
+        if git {
+            assert!(journal.git_operation(&binding).unwrap().is_some());
+        } else {
+            assert!(journal.operation("atomic-binding").unwrap().is_some());
+        }
         if defect {
             control.seed(Defect::UnconditionalWrite);
         }
         let mut stale_next = original.clone();
-        stale_next.set("state", "apply_started".to_owned());
+        if git {
+            stale_next.set("acknowledgement", "updated".to_owned());
+        } else {
+            stale_next.set("target_read_failures", 23_i64);
+        }
         let refused = match journal.records.replace(
             &journal.connection,
             Some(&original),
@@ -906,28 +952,17 @@ mod tests {
                 };
                 journal.control_storage(control.clone());
                 let binding = crate::gateway::journal::test_history::git_binding("atomic-binding");
+                let fixture_scratch = Scratch::new();
                 let original = if git {
-                    let mut row = Record::git_empty("atomic-binding");
-                    for (field, value) in [
-                        ("repository_id", "repository".to_owned()),
-                        ("ref_name", "refs/heads/approved".to_owned()),
-                        ("old_commit", "a".repeat(40)),
-                        ("new_commit", "b".repeat(40)),
-                        ("authorization_id", "approval".to_owned()),
-                        ("authorization_signer_key_id", "snapshot-signer".to_owned()),
-                        (
-                            "authorization_grant_digest",
-                            crate::gateway::journal::test_history::digest(binding.signed_grant()),
-                        ),
-                        ("state", "authorized".to_owned()),
-                    ] {
-                        row.set(field, value);
-                    }
-                    row.set(
-                        "signed_authorization_grant",
-                        binding.signed_grant().to_vec(),
+                    let fixture = open_scratch(&fixture_scratch);
+                    crate::gateway::journal::test_history::insert_git_phase(
+                        &fixture.connection,
+                        &binding,
+                        "authorized",
                     );
-                    row
+                    read_git(&fixture.connection, "atomic-binding")
+                        .unwrap()
+                        .unwrap()
                 } else {
                     record()
                 };
@@ -940,30 +975,31 @@ mod tests {
                 } else {
                     assert!(journal.operation("atomic-binding").unwrap().is_some());
                 }
-                let value = if field == "signed_authorization_grant" {
-                    Value::Blob(vec![1; maximum + 1])
-                } else {
-                    Value::Text("a".repeat(maximum + 1))
-                };
-                if virtualized {
-                    let mut corrupt = original;
-                    corrupt.set(field, value);
-                    control
-                        .0
-                        .lock()
-                        .unwrap()
-                        .virtual_store
-                        .as_ref()
-                        .unwrap()
-                        .lock()
-                        .unwrap()
-                        .insert("atomic-binding".into(), corrupt);
-                } else {
-                    // Independent direct column edit, after opening and outside the record mapper.
-                    journal
-                        .connection
-                        .execute(
-                            &format!(
+                for length in [maximum, maximum + 1] {
+                    let value = if field == "signed_authorization_grant" {
+                        Value::Blob(vec![1; length])
+                    } else {
+                        Value::Text("a".repeat(length))
+                    };
+                    if virtualized {
+                        let mut corrupt = original.clone();
+                        corrupt.set(field, value);
+                        control
+                            .0
+                            .lock()
+                            .unwrap()
+                            .virtual_store
+                            .as_ref()
+                            .unwrap()
+                            .lock()
+                            .unwrap()
+                            .insert("atomic-binding".into(), corrupt);
+                    } else {
+                        // Direct column edit after opening, independent of the record mapper.
+                        journal
+                            .connection
+                            .execute(
+                                &format!(
                                 "UPDATE {} SET {field} = ?1 WHERE operation_id = 'atomic-binding'",
                                 if git {
                                     "git_ref_operations"
@@ -971,30 +1007,80 @@ mod tests {
                                     "kubernetes_image_operations"
                                 }
                             ),
-                            [value],
-                        )
-                        .unwrap();
-                }
-                assert!(matches!(
-                    journal.records.read_table(
+                                [value],
+                            )
+                            .unwrap();
+                    }
+                    let result = journal.records.read_table(
                         &journal.connection,
                         "atomic-binding",
-                        if git { Table::Git } else { Table::Kubernetes }
-                    ),
-                    Err(GatewayError::InvalidPersistedState)
-                ));
+                        if git { Table::Git } else { Table::Kubernetes },
+                    );
+                    if length == maximum {
+                        assert!(result.unwrap().is_some(), "exact byte limit is readable");
+                    } else {
+                        assert!(matches!(result, Err(GatewayError::InvalidPersistedState)));
+                    }
+                }
             }
         }
     }
 
     #[test]
-    fn local_mapping_controls_cannot_be_serialized_as_history_faults() {
-        for (defect, encoded) in [
-            (Defect::ReplicaSwap, "\"ReplicaSwap\""),
-            (Defect::ReceiptProjectionSwap, "\"ReceiptProjectionSwap\""),
-        ] {
-            assert!(serde_json::to_string(&defect).is_err());
-            assert!(serde_json::from_str::<Defect>(encoded).is_err());
+    fn both_record_stores_refuse_cross_table_identity_without_changing_the_original_row() {
+        use crate::gateway::journal::test_history::{git_binding, insert_git_phase};
+
+        for virtualized in [false, true] {
+            for git_first in [false, true] {
+                let scratch = Scratch::new();
+                let mut journal = open_scratch(&scratch);
+                let fixture_scratch = Scratch::new();
+                let fixture = open_scratch(&fixture_scratch);
+                let binding = git_binding("atomic-binding");
+                insert_git_phase(&fixture.connection, &binding, "authorized");
+                assert!(fixture.git_operation(&binding).unwrap().is_some());
+                let git_row = read_git(&fixture.connection, "atomic-binding")
+                    .unwrap()
+                    .unwrap();
+                let kube_row = record();
+                let control = if virtualized {
+                    Control::virtualized()
+                } else {
+                    Control::default()
+                };
+                journal.control_storage(control);
+                let (first, conflicting) = if git_first {
+                    (&git_row, &kube_row)
+                } else {
+                    (&kube_row, &git_row)
+                };
+                journal
+                    .records
+                    .replace(&journal.connection, None, first, Write::Admission)
+                    .unwrap();
+                assert!(matches!(
+                    journal.records.replace(
+                        &journal.connection,
+                        None,
+                        conflicting,
+                        Write::Admission
+                    ),
+                    Err(GatewayError::OperationIdentityConflict)
+                ));
+                assert_eq!(
+                    journal
+                        .records
+                        .read_table(&journal.connection, "atomic-binding", first.table)
+                        .unwrap()
+                        .as_ref(),
+                    Some(first)
+                );
+                assert!(journal
+                    .records
+                    .read_table(&journal.connection, "atomic-binding", conflicting.table)
+                    .unwrap()
+                    .is_none());
+            }
         }
     }
 

@@ -24,3 +24,13 @@ classification computed by the fixture builder. Trust appoints only the v3 purpo
 
 The grant SHA-256 is `de65cf5b10d5f4ed0477f15b4d4d6a31f829fb31d9deb689493734784b863fa5`.
 `snapshot-receipt-v3.sha256` pins the digest of the complete signed receipt bytes.
+
+The additional `snapshot-distinct-statement-v3.hex` and `snapshot-distinct-receipt-v3.hex` use the
+same request, approval, generations, replica values and trust. Their receiver UID is
+`observed-uid-71`, their image uses `other-worker` with digest `fedcba9876543210` repeated four
+times, and their marker is `observed-operation-73`. These values cannot alias request or approval
+fields. The statement was independently assembled from the field table and signed with OpenSSL 4.0.3
+under the same synthetic receipt seed. Its digest is pinned in
+`snapshot-distinct-receipt-v3.sha256`; the original vectors remain unchanged. The paired
+receipt/trust bytes also run as the named `receiver-fields-not-request-fields` fuzz regression with
+literal receiver-field and `INSPECTED` expectations.

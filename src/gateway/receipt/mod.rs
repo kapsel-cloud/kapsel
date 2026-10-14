@@ -1542,6 +1542,43 @@ mod tests {
             assert_eq!(report.status(), status, "explicit time {time}");
             assert_eq!(report.statement(), Some(&expected));
         }
+        // A second independently assembled/signed vector distinguishes returned receiver
+        // facts from request/approval fields; the first vector remains unchanged.
+        let mut distinct = expected;
+        distinct.receiver_uid = Some("observed-uid-71".into());
+        distinct.observed_image = Some(format!(
+            "registry.example/other-worker@sha256:{}",
+            "fedcba9876543210".repeat(4),
+        ));
+        distinct.observed_operation_marker = Some("observed-operation-73".into());
+        let distinct_statement = vector_bytes(include_str!(
+            "../../../vectors/snapshot-distinct-statement-v3.hex"
+        ));
+        let distinct_receipt = vector_bytes(include_str!(
+            "../../../vectors/snapshot-distinct-receipt-v3.hex"
+        ));
+        assert_eq!(distinct.encode().unwrap(), distinct_statement);
+        assert_eq!(
+            ReceiptStatement::parse(&distinct_statement, InspectionLimits::default()).unwrap(),
+            distinct
+        );
+        assert_eq!(
+            sign_statement(&distinct, &[9; 32], "snapshot-receipt-key").unwrap(),
+            distinct_receipt
+        );
+        assert_eq!(
+            hex(&Sha256::digest(&distinct_receipt)),
+            include_str!("../../../vectors/snapshot-distinct-receipt-v3.sha256").trim()
+        );
+        let report = inspect_receipt(
+            &distinct_receipt,
+            &fixed_trust,
+            150,
+            InspectionLimits::default(),
+        );
+        assert_eq!(report.status(), InspectionStatus::Inspected);
+        assert_eq!(report.statement(), Some(&distinct));
+
         let mut legacy_trust = expected_trust;
         legacy_trust.accepted_purpose = "kapsel.kap0038.kubernetes-effect-receipt.v2".into();
         assert_eq!(
