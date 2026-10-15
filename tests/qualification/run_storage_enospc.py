@@ -62,16 +62,14 @@ def run(
         check_interruption()
     deadline = time.monotonic() + timeout
     output = bytearray()
-    with (
-        log.open("xb") if log is not None else contextlib.nullcontext() as retained,
-        subprocess.Popen(
+    with log.open("xb") if log is not None else contextlib.nullcontext() as retained:
+        child = subprocess.Popen(
             command,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             start_new_session=True,
-        ) as child,
-    ):
+        )
         assert child.stdout is not None
         selector = None
         try:
@@ -107,24 +105,33 @@ def run(
             if code:
                 raise RuntimeError(f"command failed ({code}): {shlex.join(command)}; see {log}")
         finally:
-            # Reap an exited leader before signalling its group (macOS rejects zombie-only groups).
-            child.poll()
+            primary = sys.exception()
             try:
-                os.killpg(child.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            except PermissionError:
-                # The leader can become a zombie between poll and killpg on macOS.
-                # Reap, then retry; a surviving unsignalable group remains a failure.
-                child.wait(timeout=10)
+                # Explicit ownership: Popen.__exit__ would reap without a timeout on failure.
+                # Reap before signalling (macOS rejects zombie-only groups).
+                child.poll()
                 try:
                     os.killpg(child.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
-            child.wait(timeout=10)
-            child.stdout.close()
-            if selector is not None:
-                selector.close()
+                except PermissionError:
+                    # Reap a leader that became a zombie, then retry the group.
+                    child.wait(timeout=10)
+                    try:
+                        os.killpg(child.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                child.wait(timeout=10)
+            except BaseException as cleanup:
+                if primary is not None:
+                    raise BaseExceptionGroup(
+                        "command execution and bounded cleanup failed", [primary, cleanup]
+                    ) from None
+                raise
+            finally:
+                child.stdout.close()
+                if selector is not None:
+                    selector.close()
     return bytes(output)
 
 

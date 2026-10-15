@@ -9,7 +9,11 @@ fn spawn_publisher(root: &Path) -> ChildGuard {
     ChildGuard::new(command.spawn().unwrap())
 }
 
-fn wait_for_retirement(child: ChildGuard) -> Output {
+fn wait_for_retirement(mut child: ChildGuard) -> Output {
+    // wait_with_output closes stdin; exclusion must be observed before the contender gets EOF.
+    let stdin = child.stdin.take();
+    child.wait().unwrap();
+    drop(stdin);
     child.wait_with_output().unwrap()
 }
 

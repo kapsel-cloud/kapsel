@@ -7,7 +7,7 @@
 
 use std::{
     io, panic,
-    process::Command,
+    process::{Command, Stdio},
     time::{Duration, Instant},
 };
 
@@ -54,6 +54,28 @@ fn child_timeout_kills_and_reaps_before_returning_failure() {
     );
     assert!(start.elapsed() < Duration::from_secs(2));
     assert!(child.try_wait().unwrap().is_some());
+    assert_retired(pid);
+}
+
+#[test]
+fn blocked_stdin_writer_is_inside_the_retirement_deadline() {
+    let child = ChildGuard::new(
+        Command::new("sh")
+            .args(["-c", "exec sleep 30"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let pid = child.id();
+    let start = Instant::now();
+    // Exceed pipe capacity even on hosts that dynamically grow their pipe buffers.
+    let error = child
+        .write_with_output_for(vec![b'x'; 4 * 1024 * 1024], Duration::from_millis(50))
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    assert!(start.elapsed() < Duration::from_secs(2));
     assert_retired(pid);
 }
 

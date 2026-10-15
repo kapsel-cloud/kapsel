@@ -1,7 +1,7 @@
 //! Bounded retirement and output for invocation-owned source-process children.
 
 use std::{
-    io::{self, Read as _},
+    io::{self, Read as _, Write as _},
     ops::{Deref, DerefMut},
     process::{Child, Command, ExitStatus, Output, Stdio},
     sync::mpsc,
@@ -47,6 +47,38 @@ impl ChildGuard {
             }
             thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    #[allow(dead_code, reason = "only stdio fixtures supply input")]
+    pub(super) fn write_with_output(self, input: Vec<u8>) -> io::Result<Output> {
+        self.write_with_output_for(input, DEADLINE)
+    }
+
+    #[allow(dead_code, reason = "only stdio fixtures supply input")]
+    pub(super) fn write_with_output_for(
+        mut self,
+        input: Vec<u8>,
+        duration: Duration,
+    ) -> io::Result<Output> {
+        let mut stdin = self.stdin.take().unwrap();
+        let (send, receive) = mpsc::channel();
+        thread::spawn(move || {
+            let result = stdin.write_all(&input);
+            drop(stdin);
+            let _ = send.send(result);
+        });
+        let stdout = capture(self.stdout.take());
+        let stderr = capture(self.stderr.take());
+        // Waiting starts while the writer is active, not after a potentially blocking write.
+        let status = self.wait_for(duration)?;
+        receive
+            .recv_timeout(duration)
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "child stdin writer"))??;
+        Ok(Output {
+            status,
+            stdout: captured(&stdout)?,
+            stderr: captured(&stderr)?,
+        })
     }
 
     pub(super) fn wait_with_output(mut self) -> io::Result<Output> {

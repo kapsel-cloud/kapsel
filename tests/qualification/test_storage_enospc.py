@@ -156,6 +156,37 @@ class CommandTests(unittest.TestCase):
             self.assertIn("command failed (7)", str(caught.exception.exceptions[0]))
             self.assertIn("evidence full", str(caught.exception.exceptions[1]))
 
+    def test_failed_bounded_reap_never_uses_context_manager_wait(self) -> None:
+        for execution_fails in (False, True):
+            with self.subTest(execution_fails=execution_fails):
+                child = mock.MagicMock()
+                child.__enter__.return_value = child
+                child.stdout = mock.Mock()
+                child.poll.return_value = 7 if execution_fails else 0
+                child.returncode = child.poll.return_value
+                cleanup = subprocess.TimeoutExpired(["fixture"], 10)
+                child.wait.side_effect = cleanup
+                selector = mock.Mock()
+                selector.get_map.return_value = {}
+                with (
+                    mock.patch.object(RUNNER.subprocess, "Popen", return_value=child),
+                    mock.patch.object(RUNNER.selectors, "DefaultSelector", return_value=selector),
+                    mock.patch.object(RUNNER.os, "killpg"),
+                    self.assertRaises(BaseException) as caught,
+                ):
+                    RUNNER.run(["fixture"], None)
+                if execution_fails:
+                    self.assertIsInstance(caught.exception, BaseExceptionGroup)
+                    group = caught.exception
+                    self.assertIn("command failed (7)", str(group.exceptions[0]))
+                    self.assertIs(group.exceptions[1], cleanup)
+                else:
+                    self.assertIs(caught.exception, cleanup)
+                child.wait.assert_called_once_with(timeout=10)
+                child.__exit__.assert_not_called()
+                child.stdout.close.assert_called_once_with()
+                selector.close.assert_called_once_with()
+
     def test_timeout_retires_client_descendants(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             marker = Path(temporary) / "late-write"

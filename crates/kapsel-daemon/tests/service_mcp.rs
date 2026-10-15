@@ -47,7 +47,7 @@ fn root() -> std::path::PathBuf {
 }
 
 fn bridge_output(socket: &Path, input: &[u8]) -> Output {
-    let mut child = ChildGuard::new(
+    let child = ChildGuard::new(
         Command::new(env!("CARGO_BIN_EXE_kapsel-service-mcp"))
             .env("KAPSELD_TEST_CLIENT_SOCKET", socket)
             .stdin(Stdio::piped())
@@ -56,8 +56,7 @@ fn bridge_output(socket: &Path, input: &[u8]) -> Output {
             .spawn()
             .unwrap(),
     );
-    child.stdin.take().unwrap().write_all(input).unwrap();
-    child.wait_with_output().unwrap()
+    child.write_with_output(input.to_vec()).unwrap()
 }
 
 fn bridge(socket: &Path, input: &[u8]) -> Vec<Value> {
